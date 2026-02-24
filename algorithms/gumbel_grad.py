@@ -13,8 +13,8 @@ import os
 # Add the current directory to the path to prioritize local files
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
-from causal_experiments.plots import plot_matrix, visualize_causal_graph
-from causal_experiments.generate_data import random_dag, generate_random_T
+from utils.plots import plot_matrix, visualize_causal_graph
+from utils.generate_data import random_dag, generate_random_T
 from causabs.sampling import sample_linear_concretization
 
 class CausalLearner(nn.Module):
@@ -195,8 +195,7 @@ if __name__ == "__main__":
     n_high = 3
     #A_low = random_dag(n_low, edge_density=0.5, weight_mean=0, weight_std=1, seed=seed)
     A_high_gt = random_dag(n_high, edge_density=0.5, weight_mean=0, weight_std=2, seed=seed)
-    T_gt = generate_random_T(n_low, n_high, T_range=(-1.5, 1.5), seed=seed)
-    block_size = list(np.sum((T_gt!=0),axis=0).astype(int))+[0]
+    T_gt,block_size = generate_random_T(n_low, n_high, T_range=(-1.5, 1.5), seed=seed)
     A_low,S_gt= sample_linear_concretization(A_high_gt,T_gt,block_size,internal=False)
     E_low = np.linalg.inv(np.eye(n_low) - A_low)
     

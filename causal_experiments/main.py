@@ -14,15 +14,15 @@ if project_root not in sys.path:
 # Now it WILL find algorithms
 from algorithms.gumbel_grad import gumbel_grad
 import numpy as np
-from generate_data import random_dag,generate_random_T,sample_gennorm_lingam_population_standardized
+from utils.generate_data import random_dag,generate_random_T,sample_gennorm_lingam_population_standardized
 from causabs.sampling import sample_linear_concretization
 from algorithms.gumbel_grad import gumbel_grad
 from algorithms.clustering import new_unmerge,matrix_to_clusters
 from lingam import DirectLiNGAM
-from losses import rand_index,frob_norm_T,frob_norm_A,reconstruction_rmse
+from utils.losses import rand_index,frob_norm_T,frob_norm_A,reconstruction_rmse
 import time
 import pandas as pd
-from plots import plot_experiment_results, plot_matrix
+from utils.plots import plot_experiment_results, plot_matrix
 
 class Metric:
     def __init__(self,name,function):

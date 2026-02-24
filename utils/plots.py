@@ -83,14 +83,27 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title=
     #Colour nodes based on their high-level cluster assignment
     cmap1 = cm.get_cmap('Set1',n_high)
     cmap2 = cm.get_cmap('Pastel1',n_high)
-    endogenous_colours = {high_nodes_endog[i]: cmap1(i) for i in range(n_high)} | {-1: 'lightgray'} # Unassigned nodes get light gray
-    exogenous_colours = {high_nodes_exog[i]: cmap2(i) for i in range(n_high)} | {-1: 'lightgray'} # Unassigned nodes get light gray
+    endogenous_colours = {high_nodes_endog[i]: cmap1(i) for i in range(n_high)}
+    exogenous_colours = {high_nodes_exog[i]: cmap2(i) for i in range(n_high)} 
+    BIN_COLOUR = '#D3D3D3'
     low_endog_colour = []
     low_exog_colour = []
     for i in range(n_low):
-        low_endog_colour.append(endogenous_colours[high_nodes_endog[np.where(T_matrix[i,:]!=0)[0][0]]])
-        low_exog_colour.append(exogenous_colours[high_nodes_exog[np.where(S_matrix[i,:]!=0)[0][0]]])
+        non_zero = np.where(T_matrix[i, :] != 0)[0]
+        if non_zero.size>0:
+            clst = np.where(T_matrix[i,:]!=0)[0][0]
+            low_endog_colour.append(endogenous_colours[high_nodes_endog[clst]])
+        else:
+            low_endog_colour.append(BIN_COLOUR)
+
+        non_zero = np.where(S_matrix[i, :] != 0)[0]
+        if non_zero.size > 0:
+            clst = np.where(S_matrix[i,:]!=0)[0][0]
+            low_exog_colour.append(exogenous_colours[high_nodes_exog[np.where(S_matrix[i,:]!=0)[0][0]]])
+        else:
+            low_exog_colour.append(BIN_COLOUR)
     
+    # exogenous edges
     for i in range(n_low):
         ax.annotate("", xy=pos[low_nodes_endog[i]], xytext=pos[low_nodes_exog[i]],
                     arrowprops=dict(arrowstyle="->", color="gray", alpha=0.3))
@@ -114,9 +127,10 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title=
     
     legend_elements = [
         Line2D([0], [0], color='red', lw=2, label='Pos. Causal Edge'),
-        Line2D([0], [0], color='navy', lw=2, label='Neg. Causal Edge')
+        Line2D([0], [0], color='navy', lw=2, label='Neg. Causal Edge'),
+        Patch(facecolor=BIN_COLOUR, edgecolor='black', label='Binned / Unassigned (X)')
     ]
-    
+
     # Add mapping colors to legend
     for i in range(n_high):
         legend_elements.append(
@@ -169,10 +183,17 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title=
                                             mutation_scale=20))
 
     # Draw Nodes last so they are on top
-    nx.draw_networkx_nodes(G, pos, nodelist=low_nodes_endog, node_color=low_endog_colour, node_size=400)
-    nx.draw_networkx_nodes(G, pos, nodelist=low_nodes_exog, node_color=low_exog_colour, node_size=200, node_shape='s')
+    binned_low_nodes_endog, binned_low_nodes_exog = [low_nodes_endog[i] for i in range(n_low) if low_endog_colour[i] == BIN_COLOUR], [low_nodes_exog[i] for i in range(n_low) if low_exog_colour[i] == BIN_COLOUR]
+    assigned_low_nodes_endog,assigned_low_nodes_exog = [low_nodes_endog[i] for i in range(n_low) if low_endog_colour[i] != BIN_COLOUR], [low_nodes_exog[i] for i in range(n_low) if low_exog_colour[i]!= BIN_COLOUR]
+    binned_colours = [BIN_COLOUR for _ in binned_low_nodes_endog]
+    assigned_colours_endog, assigned_colours_exog = [low_endog_colour[i] for i in range(n_low) if low_endog_colour[i] != BIN_COLOUR], [low_exog_colour[i] for i in range(n_low) if low_exog_colour[i] != BIN_COLOUR]
+    nx.draw_networkx_nodes(G, pos, nodelist=assigned_low_nodes_endog, node_color=assigned_colours_endog, edgecolors='black',node_size=400)
+    nx.draw_networkx_nodes(G, pos, nodelist=binned_low_nodes_endog, node_color=binned_colours, alpha = 0.4)
 
-    nx.draw_networkx_nodes(G, pos, nodelist=high_nodes_endog, node_color=[endogenous_colours[n] for n in high_nodes_endog], node_size=600)
+    nx.draw_networkx_nodes(G, pos, nodelist=assigned_low_nodes_exog, node_color=assigned_colours_exog, node_size=200, node_shape='s')
+    nx.draw_networkx_nodes(G, pos, nodelist=binned_low_nodes_exog, node_color=binned_colours, alpha = 0.4)
+
+    nx.draw_networkx_nodes(G, pos, nodelist=high_nodes_endog, node_color=[endogenous_colours[n] for n in high_nodes_endog], edgecolors='black', node_size=600)
     nx.draw_networkx_nodes(G, pos, nodelist=high_nodes_exog, node_color=[exogenous_colours[n] for n in high_nodes_exog], node_size=300, node_shape='s')
     nx.draw_networkx_labels(G, pos, font_size=10)
 

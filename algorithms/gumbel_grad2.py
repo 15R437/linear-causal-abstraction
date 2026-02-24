@@ -12,8 +12,8 @@ import os
 # Add the current directory to the path to prioritize local files
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
-from causal_experiments.plots import plot_matrix, visualize_causal_graph
-from causal_experiments.generate_data import random_dag, generate_random_T
+from utils.plots import plot_matrix, visualize_causal_graph
+from utils.generate_data import random_dag, generate_random_T
 from causabs.sampling import sample_linear_concretization
 
 def loss(S,T,E,Y=None):

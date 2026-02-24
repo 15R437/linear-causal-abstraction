@@ -50,3 +50,25 @@ def abstraction_distance(E_low,T_pred,E_high,**kwds):
 
         E_high_do = E_high - (E_high-np.eye(n_high)) @ (np.eye(n_high))
     pass
+
+def find_lost_weights(A_low, clusters):
+    lost_weights = []
+    
+    marg_nodes = clusters.get(-1, [])
+    if len(marg_nodes) > 0:
+        lost_weights.append(A_low[marg_nodes, :].flatten())
+        lost_weights.append(A_low[:, marg_nodes].flatten())
+
+    for s, nodes in clusters.items():
+        if s == -1 or len(nodes) < 2: 
+            continue
+        internal_block = A_low[np.ix_(nodes, nodes)]
+        lost_weights.append(internal_block.flatten())
+
+    if not lost_weights:
+        return np.array([])
+        
+    combined = np.concatenate(lost_weights)
+
+    return combined[combined != 0]
+    
