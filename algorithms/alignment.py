@@ -286,9 +286,44 @@ def is_valid_alignment(A_low,A_high,assignment_map,verbose=False):
     
     return True
 
-def update_A_high(active_clusters,A_high,i,j,style='merge'):
+def is_valid_local(A_low,A_high,assignment_array,clusters_list,active_clusters,i,j,verbose=False):
+
+    if not is_acyclic_fast(A_high):
+        log(f"Failed because A_high is Cyclic",verbose=verbose)
+        return False
+    
+    if j != -1:
+        # we are in the merging regime
+        active_clusters = [idx for idx in sorted(active_clusters) if idx != i]
+        new_clst_idx = active_clusters.index(j)
+        new_clst_nodes = clusters_list[i] + clusters_list[j]
+        for other_clst_idx in np.nonzero(A_high[new_clst_idx,:])[0]:
+            other_clst_nodes = clusters_list[active_clusters[other_clst_idx]]
+            if np.any(np.all(A_low[np.ix_(new_clst_nodes,other_clst_nodes)]==0, axis=1)):
+                    log(f"Failed because A_high[{new_clst_idx},{other_clst_idx}] is non-zero yet there exists a node in {new_clst_idx} with no child in cluster {other_clst_idx}.",verbose=verbose)
+                    return False
+    
+        old2new = {orig_clst_idx: curr_clst_idx for curr_clst_idx, orig_clst_idx in enumerate(active_clusters)}   
+        rows, cols = np.nonzero(A_low)
+        old_rows, old_cols = assignment_array[rows], assignment_array[cols]
+        old_rows[old_rows == i] = j
+        old_cols[old_cols == i] = j
+        filter = (old_rows != -1) & (old_cols != -1) & (old_rows !=old_cols)
+        old_rows, old_cols = old_rows[filter], old_cols[filter]
+        
+
+        new_rows, new_cols = np.array([old2new[r] for r in old_rows]), np.array([old2new[c] for c in old_cols])
+
+        if np.any(A_high[new_rows,new_cols] == 0):
+            log(f"Failed because A_low has a non-zero edge not reflected in A_high.",verbose=verbose)
+            return False
+    
+    return True
+    
+
+def update_A_high(active_clusters,A_high,i,j,mode='merge'):
     """
-    If style = 'merge' then i and j should be different.
+    If mode = 'merge' then i and j should be different.
     If syle = 'marginalise' then cluster i is marginalised.
     """
     #j,i = min(i,j),max(i,j)
@@ -298,7 +333,7 @@ def update_A_high(active_clusters,A_high,i,j,style='merge'):
     mask[pos_i] = False
     new_A_high = A_high[mask][:,mask]
 
-    if style=='merge':
+    if mode=='merge':
         pos_j = active_clusters.index(j)
         merged_row = A_high[pos_i,mask] | A_high[pos_j,mask]
         merged_col = A_high[mask,pos_i] | A_high[mask,pos_j]
@@ -310,9 +345,9 @@ def update_A_high(active_clusters,A_high,i,j,style='merge'):
     
     return new_A_high
 
-def build_map(active_clusters,clusters_list,marginalised_list,i,j,style='merge'):
+def build_map(active_clusters,clusters_list,marginalised_list,i,j,mode='merge'):
     """
-    If style = 'merge' then i and j should be different. i is merged into j.
+    If mode = 'merge' then i and j should be different. i is merged into j.
     If syle = 'marginalise' then cluster i is marginalised.
     """
 
@@ -323,11 +358,11 @@ def build_map(active_clusters,clusters_list,marginalised_list,i,j,style='merge')
         for node in clusters_list[orig_clst]:
             assignment_map[node] = new_clst
         
-        if style == 'merge' and orig_clst == j:
+        if mode == 'merge' and orig_clst == j:
             for node in clusters_list[i]:
                 assignment_map[node] = new_clst
 
-    if style == 'marginalise':
+    if mode == 'marginalise':
         for node in clusters_list[i]:
             assignment_map[i] = -1
     
@@ -338,6 +373,7 @@ def hierarchical_clustering_heap(A_low,n_high):
     n_low = A_low.shape[0]
     A_high = (A_low != 0).astype(int)
     clusters_list = [[i] for i in range(n_low)]
+    assignment_array = np.arange(n_low)
     marginalised = []
 
     is_active_mask = np.ones(n_low,dtype=bool) #tracks active nodes
@@ -373,26 +409,28 @@ def hierarchical_clustering_heap(A_low,n_high):
         if v_i != cluster_version[i] or (j != -1 and v_j != cluster_version[j]):
             continue
 
-        temp_A_high = update_A_high(active_clusters,A_high,i,j,style=mode)
-        temp_assignment_map = build_map(active_clusters,clusters_list,marginalised,i,j,style=mode)
-        if is_valid_alignment(A_low, temp_A_high, temp_assignment_map):
-            A_high = update_A_high(active_clusters,A_high,i,j,style=mode)
-            if mode == 'merge':
+        temp_A_high = update_A_high(active_clusters,A_high,i,j,mode=mode)
+        if mode == 'marginalise':
+            A_high = temp_A_high
+            is_active_mask[clusters_list[i]] = False
+            marginalised.extend(clusters_list[i])
+            assignment_array[clusters_list[i]] = -1
+            active_clusters.remove(i)
+            cluster_version[i] += 1
+            k -= 1
+
+        elif mode == 'merge':
+            if is_valid_local(A_low, temp_A_high, assignment_array, clusters_list, active_clusters, i, j):
+                A_high = temp_A_high 
                 clusters_list[j].extend(clusters_list[i])
+                assignment_array[clusters_list[i]] = j
                 active_clusters.remove(i)
                 cluster_version[j] += 1
                 push_merge_candidate(j)
                 push_marginalise_candidate(j)
+                k -= 1
 
-            elif mode == 'marginalise':
-                is_active_mask[clusters_list[i]] = False
-                marginalised.extend(clusters_list[i])
-                active_clusters.remove(i)
-                cluster_version[i] += 1
-
-            k -= 1
-
-    clusters_dict = {-1:marginalised} | {idx:clusters_list[c] for idx,c in enumerate(sorted(list(active_clusters)))}
+    clusters_dict = {-1:marginalised} | {idx:clusters_list[c] for idx,c in enumerate(sorted(active_clusters))}
     return clusters_dict, A_high
 
 
@@ -405,7 +443,7 @@ def hierarchical_clustering(A_low,n_high):
     for k in range(n_low,n_high,-1):
         best_loss = np.inf
         best_pair = None
-        merge_type = None # 'merge' or 'mmarginalised'
+        mode = None # 'merge' or 'mmarginalised'
         is_active = np.ones(A_low.shape[0], dtype=bool)
         if marginalised:
             is_active[marginalised] = False
@@ -416,12 +454,12 @@ def hierarchical_clustering(A_low,n_high):
                 loss = np.sum(np.abs(A_low[np.ix_(clusters_list[i],clusters_list[j])]))
 
                 if loss < best_loss:
-                    temp_A_high = update_A_high(A_high,i,j,style='merge')
-                    temp_assignment_map = build_map(clusters_list,marginalised,i,j,style='merge')
+                    temp_A_high = update_A_high(A_high,i,j,mode='merge')
+                    temp_assignment_map = build_map(clusters_list,marginalised,i,j,mode='merge')
                     if is_valid_alignment(A_low,temp_A_high,temp_assignment_map):
                         best_loss = loss
                         best_pair = i,j
-                        merge_type = 'merge'
+                        mode = 'merge'
                     else:
                         #marginalise each cluster in turn
                         for clst1,clst2 in zip((i,j),(j,i)):
@@ -430,23 +468,23 @@ def hierarchical_clustering(A_low,n_high):
                             internal = np.sum(np.abs(A_low[np.ix_(clusters_list[clst1],clusters_list[clst1])]))
                             loss = outgoing + incoming - internal
                             if loss < best_loss:
-                                temp_A_high = update_A_high(A_high,clst1,clst1,style='marginalise')
-                                temp_assignment_map = build_map(clusters_list,marginalised,clst1,clst1,style='marginalise')
+                                temp_A_high = update_A_high(A_high,clst1,clst1,mode='marginalise')
+                                temp_assignment_map = build_map(clusters_list,marginalised,clst1,clst1,mode='marginalise')
 
                                 if is_valid_alignment(A_low,temp_A_high,temp_assignment_map):
                                     best_loss = loss
                                     best_pair = clst1,clst2
-                                    merge_type = 'marginalise'
+                                    mode = 'marginalise'
 
         if best_pair is not None:
             i_star,j_star = best_pair
-            if merge_type == 'merge':
+            if mode == 'merge':
                 clusters_list[j_star].extend(clusters_list[i_star])
-            elif merge_type == 'marginalise':
+            elif mode == 'marginalise':
                 marginalised.extend(clusters_list[i_star])
 
             clusters_list.pop(i_star)
-            A_high = update_A_high(A_high,i_star,j_star,style=merge_type)
+            A_high = update_A_high(A_high,i_star,j_star,mode=mode)
             
         else:
             print(f"Stoping at k={k+1} as no valid pairs were found.")
