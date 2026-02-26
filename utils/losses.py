@@ -59,8 +59,8 @@ def find_lost_weights(A_low, clusters):
         lost_weights.append(A_low[marg_nodes, :].flatten())
         lost_weights.append(A_low[:, marg_nodes].flatten())
 
-    for s, nodes in clusters.items():
-        if s == -1 or len(nodes) < 2: 
+    for clst, nodes in clusters.items():
+        if clst == -1 or len(nodes) < 2: 
             continue
         internal_block = A_low[np.ix_(nodes, nodes)]
         lost_weights.append(internal_block.flatten())

@@ -1,6 +1,8 @@
 import numpy as np
 import copy
 import random
+import itertools
+import heapq
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
@@ -9,63 +11,6 @@ from utils.generate_data import random_dag
 from utils.plots import visualize_causal_graph
 from utils.losses import find_lost_weights
 
-def is_acyclic_fast(A, threshold=0):
-    #Khan's Algorithm with the assumption that A[i,j] represents i -> j
-    adj = np.abs(A) > threshold
-    n = adj.shape[0]
-    in_degree = adj.sum(axis=0) 
-    queue = [i for i in range(n) if in_degree[i] == 0]
-    count = 0
-    
-    while queue:
-        u = queue.pop(0)
-        count += 1
-        for v in range(n):
-            if adj[u, v]:
-                in_degree[v] -= 1
-                if in_degree[v] == 0:
-                    queue.append(v)
-    
-    return count == n
-
-def log(msg,verbose):
-    if verbose:
-        print(msg)
-
-def is_valid_alignment(A_low,A_high,assignment_map,verbose=False):
-    assert (isinstance(A_low, np.ndarray) and A_low.ndim == 2 and A_low.shape[0] == A_low.shape[1]), "A_low must be a 2D square numpy array"
-    assert (isinstance(A_high, np.ndarray) and A_high.ndim == 2 and A_high.shape[0] == A_high.shape[1]), "A_high must be a 2D square numpy array"
-    #assert isinstance(assignment_map, dict) and all(isinstance(k, int) and isinstance(v, int) for k, v in assignment_map.items()), "assignment map must be a dictionary with integer keys and values"
-
-    clusters = {i:[] for i in set(assignment_map.values())}
-    for node,clst in assignment_map.items():
-        if clst != -1: #ignore the bin cluster
-            clusters[clst].append(node)
-
-    if not is_acyclic_fast(A_high):
-        log(f"Failed because A_high is Cyclic",verbose=verbose)
-        return False
-
-    for clst1,nodes1 in clusters.items():
-        for clst2,nodes2 in clusters.items():
-            if A_high[clst1, clst2] != 0:
-                for i in nodes1:
-                    if np.all(A_low[i, nodes2] == 0):
-                        log(f"Failed because A_high[{clst1},{clst2}] is non-zero yet node {i} has no child in cluster {clst2}.",verbose=verbose)
-                        return False
-                    
-
-    for i,clst1 in assignment_map.items():
-        for j,clst2 in assignment_map.items():
-            if clst1 == clst2:
-                continue
-            elif clst1 == -1 or clst2 == -1:
-                continue
-            elif A_low[i,j] != 0 and A_high[clst1, clst2] == 0:
-                log(f"Failed because A_low[{i},{j}] is non-zero yet A_high[{clst1},{clst2}] is zero.",verbose=verbose)
-                return False
-    
-    return True
 
 def find_valid_clusters(A,A_high,node,assignment_map,seed=None):
     #subroutine to find a list of valid clusters for a given unassigned node
@@ -282,62 +227,233 @@ def find_valid_alignment(A,k,init_clusters=None,seed=None,verbose=False):
     
     return assignment_map,A_high
 
-def hierarcical_clustering(A_low,n_high):
+def is_acyclic_fast(A, threshold=0):
+    #Khan's Algorithm with the assumption that A[i,j] represents i -> j
+    adj = np.abs(A) > threshold
+    n = adj.shape[0]
+    in_degree = adj.sum(axis=0) 
+    queue = [i for i in range(n) if in_degree[i] == 0]
+    count = 0
+    
+    while queue:
+        u = queue.pop(0)
+        count += 1
+        for v in range(n):
+            if adj[u, v]:
+                in_degree[v] -= 1
+                if in_degree[v] == 0:
+                    queue.append(v)
+    
+    return count == n
+
+def log(msg,verbose):
+    if verbose:
+        print(msg)
+
+def is_valid_alignment(A_low,A_high,assignment_map,verbose=False):
+    assert (isinstance(A_low, np.ndarray) and A_low.ndim == 2 and A_low.shape[0] == A_low.shape[1]), "A_low must be a 2D square numpy array"
+    assert (isinstance(A_high, np.ndarray) and A_high.ndim == 2 and A_high.shape[0] == A_high.shape[1]), "A_high must be a 2D square numpy array"
+    #assert isinstance(assignment_map, dict) and all(isinstance(k, int) and isinstance(v, int) for k, v in assignment_map.items()), "assignment map must be a dictionary with integer keys and values"
+
+    unique_clusters = sorted([c for c in set(assignment_map.values()) if c != -1])
+    n_high = len(unique_clusters)
+    n_low = A_low.shape[0]
+    assert A_high.shape[0] == n_high
+
+
+    if not is_acyclic_fast(A_high):
+        log(f"Failed because A_high is Cyclic",verbose=verbose)
+        return False
+
+    # check that A_high[clst1,clst2] != 0 ==> every node1 in clst1 has a child node2 in clst2
+    clusters_list = [[node for node,clst in assignment_map.items() if clst == c] for c in range(len(unique_clusters))]
+    for clst1,nodes1 in enumerate(clusters_list):
+        for clst2 in np.nonzero(A_high[clst1,:])[0]:
+            nodes2 = clusters_list[clst2]
+            if np.any(np.all(A_low[np.ix_(nodes1,nodes2)]==0, axis=1)):
+                log(f"Failed because A_high[{clst1},{clst2}] is non-zero yet there exists a node in {clst1} with no child in cluster {clst2}.",verbose=verbose)
+                return False
+
+    # check that A_low[i,j] != 0  ==> A_high[assignment_map[i],assignment_map[j]] != 0  for assignment_map[i] != assignment_map[j]           
+    assignment_array = np.array([assignment_map.get(i,-1) for i in range(n_low)])
+    rows, cols = np.nonzero(A_low)
+    filter = (assignment_array[rows] != -1) & (assignment_array[cols] != -1) & (assignment_array[rows] != assignment_array[cols])
+    rows, cols = rows[filter], cols[filter]
+
+    if np.any(A_high[assignment_array[rows],assignment_array[cols]] == 0):
+        log(f"Failed because A_low has a non-zero edge not reflected in A_high.",verbose=verbose)
+        return False
+    
+    return True
+
+def update_A_high(active_clusters,A_high,i,j,style='merge'):
+    """
+    If style = 'merge' then i and j should be different.
+    If syle = 'marginalise' then cluster i is marginalised.
+    """
+    #j,i = min(i,j),max(i,j)
+    active_clusters = sorted(active_clusters)
+    pos_i = active_clusters.index(i)
+    mask = np.ones(A_high.shape[0],dtype=bool)
+    mask[pos_i] = False
+    new_A_high = A_high[mask][:,mask]
+
+    if style=='merge':
+        pos_j = active_clusters.index(j)
+        merged_row = A_high[pos_i,mask] | A_high[pos_j,mask]
+        merged_col = A_high[mask,pos_i] | A_high[mask,pos_j]
+        
+        pos_j = pos_j if pos_j < pos_i else pos_j - 1
+        new_A_high[pos_j,:] = merged_row
+        new_A_high[:,pos_j] = merged_col
+        new_A_high[pos_j,pos_j] = 0
+    
+    return new_A_high
+
+def build_map(active_clusters,clusters_list,marginalised_list,i,j,style='merge'):
+    """
+    If style = 'merge' then i and j should be different. i is merged into j.
+    If syle = 'marginalise' then cluster i is marginalised.
+    """
+
+    assignment_map = {node: -1 for node in marginalised_list}
+    active_clusters = sorted([idx for idx in active_clusters if idx!= i])
+
+    for new_clst,orig_clst in enumerate(active_clusters):
+        for node in clusters_list[orig_clst]:
+            assignment_map[node] = new_clst
+        
+        if style == 'merge' and orig_clst == j:
+            for node in clusters_list[i]:
+                assignment_map[node] = new_clst
+
+    if style == 'marginalise':
+        for node in clusters_list[i]:
+            assignment_map[i] = -1
+    
+
+    return assignment_map
+
+def hierarchical_clustering_heap(A_low,n_high):
     n_low = A_low.shape[0]
     A_high = (A_low != 0).astype(int)
-    clusters = {-1:[]} | {i:[i] for i in range(n_low)}
+    clusters_list = [[i] for i in range(n_low)]
+    marginalised = []
+
+    is_active_mask = np.ones(n_low,dtype=bool) #tracks active nodes
+    active_clusters = set(range(n_low))
+    cluster_version = {i:0 for i in range(n_low)}
+    heap = []
+
+    def push_merge_candidate(idx):
+        for other in active_clusters:
+            if other == idx: continue
+            loss = np.sum(np.abs(A_low[np.ix_(clusters_list[idx], clusters_list[other])])) + np.sum(np.abs(A_low[np.ix_(clusters_list[other], clusters_list[idx])]))
+            heapq.heappush(heap, (loss, idx, other, 'merge', cluster_version[idx], cluster_version[other]))
+
+    def push_marginalise_candidate(idx):
+        outgoing = np.sum(np.abs(A_low[clusters_list[idx]][:,is_active_mask]))
+        incoming = np.sum(np.abs(A_low[is_active_mask][:,clusters_list[idx]]))
+        internal = np.sum(np.abs(A_low[np.ix_(clusters_list[idx],clusters_list[idx])]))
+        loss = outgoing + incoming - internal
+        heapq.heappush(heap, (loss, idx, -1, 'marginalise', cluster_version[idx], 0))
+
+
+    for i in range(n_low):
+        push_marginalise_candidate(i)
+        for j in range(i):
+            loss = np.sum(np.abs(A_low[i, j])) + np.sum(np.abs(A_low[j, i]))
+            heapq.heappush(heap, (loss, i, j, 'merge', 0, 0))
+    
+    k = n_low
+    while k > n_high and heap:
+        loss, i, j, mode, v_i, v_j = heapq.heappop(heap)
+        if i not in active_clusters or (mode == 'merge' and j not in active_clusters):
+            continue
+        if v_i != cluster_version[i] or (j != -1 and v_j != cluster_version[j]):
+            continue
+
+        temp_A_high = update_A_high(active_clusters,A_high,i,j,style=mode)
+        temp_assignment_map = build_map(active_clusters,clusters_list,marginalised,i,j,style=mode)
+        if is_valid_alignment(A_low, temp_A_high, temp_assignment_map):
+            A_high = update_A_high(active_clusters,A_high,i,j,style=mode)
+            if mode == 'merge':
+                clusters_list[j].extend(clusters_list[i])
+                active_clusters.remove(i)
+                cluster_version[j] += 1
+                push_merge_candidate(j)
+                push_marginalise_candidate(j)
+
+            elif mode == 'marginalise':
+                is_active_mask[clusters_list[i]] = False
+                marginalised.extend(clusters_list[i])
+                active_clusters.remove(i)
+                cluster_version[i] += 1
+
+            k -= 1
+
+    clusters_dict = {-1:marginalised} | {idx:clusters_list[c] for idx,c in enumerate(sorted(list(active_clusters)))}
+    return clusters_dict, A_high
+
+
+def hierarchical_clustering(A_low,n_high):
+    n_low = A_low.shape[0]
+    A_high = (A_low != 0).astype(int)
+    clusters_list = [[i] for i in range(n_low)]
+    marginalised = []
+
     for k in range(n_low,n_high,-1):
-        best_A_high = None
-        best_clusters = None
         best_loss = np.inf
+        best_pair = None
+        merge_type = None # 'merge' or 'mmarginalised'
+        is_active = np.ones(A_low.shape[0], dtype=bool)
+        if marginalised:
+            is_active[marginalised] = False
+        
         for i in range(k):
             for j in range(i):
                 #merge node i into node j (note j < i)
-                temp_clusters = {clst:nodes for clst,nodes in clusters.items() if clst < i} | {clst-1 :nodes for clst,nodes in clusters.items() if clst > i}
-                temp_clusters[j] = clusters[j]+clusters[i]
-                temp_A_high = A_high.copy()
-                temp_A_high[j,:] = np.logical_or(A_high[i,:], A_high[j,:]).astype(int)
-                temp_A_high[:,j] = np.logical_or(A_high[:,i], A_high[:,j]).astype(int)
-                temp_A_high[j,j] = 0
-                temp_A_high = np.delete(temp_A_high, i, axis=0)
-                temp_A_high = np.delete(temp_A_high, i, axis=1)
-                temp_assignment_map = {val: i for i, sublist in temp_clusters.items() for val in sublist}
-                
-                if is_valid_alignment(A_low,temp_A_high,temp_assignment_map):
-                    lost_weights = find_lost_weights(A_low,temp_clusters)
-                    loss = np.sum(np.abs(lost_weights)).item()
-                    if loss < best_loss:
-                        best_A_high = temp_A_high.copy()
-                        best_clusters = copy.deepcopy(temp_clusters)
-                        best_loss = loss
-    
-                #marginalise each cluster in turn
-                for clst1,clst2 in zip((i,j),(j,i)):
-                    temp_clusters = {clst:nodes for clst,nodes in clusters.items() if clst < clst1} | {clst-1:nodes for clst,nodes in clusters.items() if clst > clst1}
-                    temp_clusters[-1] = clusters[-1] + clusters[clst1]
-                    temp_clusters[clst2 - (clst2 > clst1)] = clusters[clst2]
-                    temp_A_high = A_high.copy()
-                    temp_A_high = np.delete(temp_A_high, clst1, axis=0)
-                    temp_A_high = np.delete(temp_A_high, clst1, axis=1)
-                    temp_assignment_map = {val: clst for clst, sublist in temp_clusters.items() for val in sublist}
+                loss = np.sum(np.abs(A_low[np.ix_(clusters_list[i],clusters_list[j])]))
 
+                if loss < best_loss:
+                    temp_A_high = update_A_high(A_high,i,j,style='merge')
+                    temp_assignment_map = build_map(clusters_list,marginalised,i,j,style='merge')
                     if is_valid_alignment(A_low,temp_A_high,temp_assignment_map):
-                        lost_weights = find_lost_weights(A_low,temp_clusters)
-                        loss = np.sum(np.abs(lost_weights)).item()
-                        if loss < best_loss:
-                            best_A_high = temp_A_high.copy()
-                            best_clusters = copy.deepcopy(temp_clusters)
-                            best_loss = loss
+                        best_loss = loss
+                        best_pair = i,j
+                        merge_type = 'merge'
+                    else:
+                        #marginalise each cluster in turn
+                        for clst1,clst2 in zip((i,j),(j,i)):
+                            outgoing = np.sum(np.abs(A_low[clusters_list[clst1]][:,is_active]))
+                            incoming = np.sum(np.abs(A_low[is_active][:,clusters_list[clst1]]))
+                            internal = np.sum(np.abs(A_low[np.ix_(clusters_list[clst1],clusters_list[clst1])]))
+                            loss = outgoing + incoming - internal
+                            if loss < best_loss:
+                                temp_A_high = update_A_high(A_high,clst1,clst1,style='marginalise')
+                                temp_assignment_map = build_map(clusters_list,marginalised,clst1,clst1,style='marginalise')
 
-        if best_A_high is not None:
-            clusters = copy.deepcopy(best_clusters)
-            A_high = copy.deepcopy(best_A_high)
+                                if is_valid_alignment(A_low,temp_A_high,temp_assignment_map):
+                                    best_loss = loss
+                                    best_pair = clst1,clst2
+                                    merge_type = 'marginalise'
+
+        if best_pair is not None:
+            i_star,j_star = best_pair
+            if merge_type == 'merge':
+                clusters_list[j_star].extend(clusters_list[i_star])
+            elif merge_type == 'marginalise':
+                marginalised.extend(clusters_list[i_star])
+
+            clusters_list.pop(i_star)
+            A_high = update_A_high(A_high,i_star,j_star,style=merge_type)
+            
         else:
             print(f"Stoping at k={k+1} as no valid pairs were found.")
             break        
     
-
-    return clusters,A_high
+    clusters_dict = {-1:marginalised} | {idx:nodes for idx,nodes in enumerate(clusters_list)}
+    return clusters_dict,A_high
 
 
     
@@ -353,7 +469,7 @@ if __name__ == "__main__":
     init_clusters = {} #{i:[random_sample[i]] for i in range(n_high)}
 
     #assignment,A_high = find_valid_alignment(A_low,n_high, init_clusters, seed=seed)
-    clusters,A_high = hierarcical_clustering(A_low,n_high)
+    clusters,A_high = hierarchical_clustering_heap(A_low,n_high)
     assignment = {val: i for i, sublist in clusters.items() for val in sublist}
     T_pred = np.zeros((n_low, n_high))
     for node, clst in assignment.items():

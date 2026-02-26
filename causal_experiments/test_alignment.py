@@ -6,7 +6,7 @@ import math
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
-from algorithms.alignment import find_valid_alignment
+from algorithms.alignment import find_valid_alignment, hierarchical_clustering_heap
 from utils.plots import plot_matrix, visualize_causal_graph
 from utils.generate_data import random_dag, generate_random_T
 from utils.losses import find_lost_weights
@@ -29,10 +29,8 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),ma
 def run(n_high,n_low,density,seed=None):
     A_low,S_gt= sample_low_level_graph(n_high=n_high,n_low=n_low,density=density,seed=seed)
 
-    assignment_map, A_high = find_valid_alignment(A_low,k=n_high,seed=seed)
-    clusters = {i:[] for i in range(-1,A_high.shape[0])}
-    for node,clst in assignment_map.items():
-        clusters[clst].append(node)
+    clusters, A_high = hierarchical_clustering_heap(A_low,n_high=n_high)
+    
     
     lost_weights = find_lost_weights(A_low,clusters)
     
@@ -46,9 +44,11 @@ if __name__ == "__main__":
 
     results = []
     count = 0
+    start_time = time.time()
     for n_high in n_high_list:
         for l in lambda_list:
             n_low = math.ceil(l*n_high)
+            t_start = time.time()
             for density in density_list:
                 A_low,clusters = run(n_high=n_high,n_low=n_low,density=density,seed=seed)
                 lost_weights = find_lost_weights(A_low,clusters)
@@ -57,12 +57,12 @@ if __name__ == "__main__":
                     "n_low":n_low,
                     "lambda":l,
                     "density":density,
-                    "L1 lost weight": np.sum(np.sqrt(lost_weights**2)).item(),
+                    "L1 lost weight": np.sum(np.abs(lost_weights)).item(),
                     "Count lost weight": len(lost_weights),
                     "Count marginalised": len(clusters[-1])
                 })
                 count += 1
-                print(f"Count: {count}")
+            print(f"Time Taken (n_high={n_high}, n_low={n_low}): {time.time()-t_start:.6f}s")
     
     results_df = pd.DataFrame(results)
 
