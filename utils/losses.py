@@ -51,7 +51,7 @@ def abstraction_distance(E_low,T_pred,E_high,**kwds):
         E_high_do = E_high - (E_high-np.eye(n_high)) @ (np.eye(n_high))
     pass
 
-def find_lost_weights(A_low, clusters):
+def find_lost_weights_old(A_low, clusters):
     lost_weights = []
     
     marg_nodes = clusters.get(-1, [])
@@ -71,4 +71,26 @@ def find_lost_weights(A_low, clusters):
     combined = np.concatenate(lost_weights)
 
     return combined[combined != 0]
+
+def find_lost_weights(A_low, clusters):
+    # 1. Create a mask of "preserved" edges (initially all False)
+    n = A_low.shape[0]
+    active_nodes = []
+    for clst, nodes in clusters.items():
+        if clst != -1:
+            active_nodes.extend(nodes)
+            
+    all_edges_mask = (A_low != 0)
     
+    survived_mask = np.zeros((n, n), dtype=bool)
+    for clst, nodes in clusters.items():
+        if clst == -1: continue
+        for other_clst, other_nodes in clusters.items():
+            if other_clst == -1 or clst == other_clst:
+                continue
+            # These are the edges that A_high actually represents
+            survived_mask[np.ix_(nodes, other_nodes)] = True
+            
+    # Lost edges are those that were non-zero but didn't survive
+    lost_mask = all_edges_mask & ~survived_mask
+    return A_low[lost_mask]

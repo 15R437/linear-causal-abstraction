@@ -312,12 +312,12 @@ def is_valid_local(A_low,A_high,assignment_array,clusters_list,active_clusters,i
         old_rows, old_cols = old_rows[filter], old_cols[filter]
         
 
-        new_rows, new_cols = np.array([old2new[r] for r in old_rows]), np.array([old2new[c] for c in old_cols])
-
+        new_rows, new_cols = np.array([old2new[r] for r in old_rows],dtype=int), np.array([old2new[c] for c in old_cols],dtype=int)
+        
         if np.any(A_high[new_rows,new_cols] == 0):
             log(f"Failed because A_low has a non-zero edge not reflected in A_high.",verbose=verbose)
             return False
-    
+        
     return True
     
 
@@ -402,6 +402,8 @@ def hierarchical_clustering_heap(A_low,n_high):
             heapq.heappush(heap, (loss, i, j, 'merge', 0, 0))
     
     k = n_low
+    clusters_dict = {n_low:{i:[] for i in range(-1,n_low)}}
+    A_high_dict = {n_low:A_high}
     while k > n_high and heap:
         loss, i, j, mode, v_i, v_j = heapq.heappop(heap)
         if i not in active_clusters or (mode == 'merge' and j not in active_clusters):
@@ -419,6 +421,9 @@ def hierarchical_clustering_heap(A_low,n_high):
             cluster_version[i] += 1
             k -= 1
 
+            clusters_dict[k] = {-1:marginalised} | {idx:clusters_list[c] for idx,c in enumerate(sorted(active_clusters))}
+            A_high_dict[k] = A_high
+
         elif mode == 'merge':
             if is_valid_local(A_low, temp_A_high, assignment_array, clusters_list, active_clusters, i, j):
                 A_high = temp_A_high 
@@ -430,8 +435,10 @@ def hierarchical_clustering_heap(A_low,n_high):
                 push_marginalise_candidate(j)
                 k -= 1
 
-    clusters_dict = {-1:marginalised} | {idx:clusters_list[c] for idx,c in enumerate(sorted(active_clusters))}
-    return clusters_dict, A_high
+                clusters_dict[k] = {-1:marginalised} | {idx:clusters_list[c] for idx,c in enumerate(sorted(active_clusters))}
+                A_high_dict[k] = A_high
+
+    return clusters_dict, A_high_dict
 
 
 def hierarchical_clustering(A_low,n_high):
@@ -497,7 +504,7 @@ def hierarchical_clustering(A_low,n_high):
     
 if __name__ == "__main__":
     seed = None
-    n_low = 10
+    n_low = 15
     n_high = 5
     edge_density = 0.2
     A_low = random_dag(n_low, edge_density=edge_density, weight_mean=0, weight_std=1, seed=seed)
@@ -507,7 +514,9 @@ if __name__ == "__main__":
     init_clusters = {} #{i:[random_sample[i]] for i in range(n_high)}
 
     #assignment,A_high = find_valid_alignment(A_low,n_high, init_clusters, seed=seed)
-    clusters,A_high = hierarchical_clustering_heap(A_low,n_high)
+    clusters_dict,A_high_dict = hierarchical_clustering_heap(A_low,n_high)
+    clusters = clusters_dict[n_high]
+    A_high = A_high_dict[n_high]
     assignment = {val: i for i, sublist in clusters.items() for val in sublist}
     T_pred = np.zeros((n_low, n_high))
     for node, clst in assignment.items():

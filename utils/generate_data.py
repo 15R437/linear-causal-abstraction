@@ -114,6 +114,21 @@ def T_concretisation_sampling(A_high,T,edge_density=0.3,seed=None,max_abs_weight
     
     return A_low
 
+def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),marg_prob=0,seed=None,max_attempts=10):
+    adj_structure = (random_dag(n_high,density, seed=seed) != 0).astype(float)
+    rng = np.random.default_rng(seed)
+    for _ in range(max_attempts):
+        weights = rng.normal(0, 0.5, size=adj_structure.shape)
+        A_high_gt = adj_structure * weights
+        try:
+            T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=seed)
+            A_low, S_gt = sample_linear_concretization(A_high_gt,T_gt,block_size,internal=False,alpha=1.,style='uniform')
+            return A_low,T_gt,S_gt,A_high_gt
+        except:
+            pass
+    
+    raise RuntimeError(f"Could not find a stable model after {max_attempts} attempts.")
+
 def sample_gennorm_lingam_population_standardized(A_gt_mat, n_samples, gennorm_param, seed=None):
     n = A_gt_mat.shape[0]
     I = np.eye(n)

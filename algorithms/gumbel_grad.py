@@ -14,110 +14,146 @@ import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 from utils.plots import plot_matrix, visualize_causal_graph
-from utils.generate_data import random_dag, generate_random_T
+from utils.generate_data import random_dag, generate_random_T, sample_low_level_graph
 from causabs.sampling import sample_linear_concretization
 
 class CausalLearner(nn.Module):
-    def __init__(self,n_low,n_high,eps=0.1,W=None,T=None,E_high=None):
+    def __init__(self,n_low,n_high,threshold=1e-8,W=None,T=None,E_high=None,E_high_mask=None):
         super().__init__()
         self.n_low = n_low
         self.n_high = n_high
-        self.eps = eps
+        self.threshold = threshold
         self.set_W(W)
         self.set_T(T)
         self.set_E_high(E_high)
 
-        self.register_buffer('mask', torch.triu(torch.ones(n_high, n_high), diagonal=1))
-        self.register_buffer('identity', torch.eye(n_high))
+        if E_high_mask is None:
+            E_high_mask = torch.triu(torch.ones(n_high, n_high), diagonal=1)
+            E_high_mask = torch.concatenate([E_high_mask,torch.zeros(n_high,1)],dim=1)
+            E_high_mask = torch.concatenate([E_high_mask,torch.zeros(1,n_high+1)],dim=0)
+        else:
+            assert(E_high_mask.shape == (self.n_high,self.n_high)),f"Expected shape {(self.n_high,self.n_high)}, got {E_high_mask.shape}." 
+            E_high_mask = torch.concatenate([E_high_mask,torch.zeros(n_high,1)],dim=1)
+            E_high_mask = torch.concatenate([E_high_mask,torch.zeros(1,n_high+1)],dim=0)
+            E_high_mask.fill_diagonal_(0)
+
+        self.register_buffer('mask', E_high_mask)
+        self.register_buffer('identity', torch.eye(n_high+1))
     
+
     def set_W(self,W=None,requires_grad=True):
         if W is None:
-            self.W = nn.Parameter(torch.randn(self.n_low,self.n_high),requires_grad=requires_grad)
+            self.W = nn.Parameter(torch.randn(self.n_low,self.n_high+1),requires_grad=requires_grad) #the last column represents the high-level bin node for marginalised low-level variables
         else:
             assert(W.shape == (self.n_low,self.n_high)),f"Expected shape {(self.n_low,self.n_high)}, got {W.shape}."
+            marg_col = torch.all(W == 0,dim=1).view(-1,1)
+            W = torch.concatenate([W,marg_col],dim=1)
             self.W = nn.Parameter(W,requires_grad=requires_grad)
     
     def set_T(self,T=None,requires_grad=True):
         if T is None:
-            self.T = nn.Parameter(torch.randn(self.n_low,self.n_high),requires_grad=requires_grad)
+            self.T = nn.Parameter(torch.randn(self.n_low,self.n_high+1),requires_grad=requires_grad)
         else:
             assert(T.shape == (self.n_low,self.n_high)),f"Expected shape {(self.n_low,self.n_high)}, got {T.shape}."
+            marg_col = torch.all(T == 0,dim=1).view(-1,1)
+            T = torch.concatenate([T,marg_col],dim=1)
             self.T = nn.Parameter(T,requires_grad=requires_grad)
 
     def set_E_high(self,E_high=None,requires_grad=True):
         if E_high is None:
-            self.E_high = nn.Parameter(torch.zeros(self.n_high,self.n_high),requires_grad=requires_grad)
+            self.E_high = nn.Parameter(torch.randn(self.n_high+1,self.n_high+1),requires_grad=requires_grad)
         else:
             assert(E_high.shape == (self.n_high,self.n_high)),f"Expected shape {(self.n_high,self.n_high)}, got {E_high.shape}."
+            E_high = torch.concatenate([E_high,torch.zeros(self.n_high,1)],dim=1)
+            E_high = torch.concatenate([E_high,torch.zeros(1,self.n_high+1)],dim=0)
             self.E_high = nn.Parameter(E_high,requires_grad=requires_grad)
     
-    def forward(self,E,temp,hard=False):
-        if self.training:
-            T_mask = F.gumbel_softmax(self.W,tau=temp,hard=hard,dim=1)
+    def get_assignment_entropy(self):
+        probs = torch.softmax(self.W, dim=1)
+        entropy = -1 * torch.sum(probs * torch.log(probs + 1e-9), dim=-1)
+        return entropy.mean()
+    
+    def get_T(self,temp=None,hard=True):
+        if self.training and temp is not None:
+            partition_mask = F.gumbel_softmax(self.W,tau=temp,hard=hard,dim=1)
         else:
-            T_mask = F.one_hot(torch.argmax(self.W,dim=1),num_classes=self.n_high).float()
+            partition_mask = F.one_hot(torch.argmax(self.W,dim=1),num_classes=self.n_high+1).float()
 
+        T = partition_mask * self.T
+        threshold_mask = (torch.abs(T)>self.threshold).float()
+        return (threshold_mask * T - T).detach() + T, partition_mask
+    
+    def get_E_high(self,partition_mask=None):
+        if partition_mask is None:
+            partition_mask = F.one_hot(torch.argmax(self.W,dim=1),num_classes=self.n_high+1).float()
+        
+        active_nodes = (partition_mask.sum(dim=0) > 0)
+        interaction_mask = active_nodes.unsqueeze(0) * active_nodes.unsqueeze(1)
+        
+        E_high_masked = (self.E_high * self.mask) * interaction_mask + self.identity
+        threshold_mask = (torch.abs(E_high_masked)>self.threshold).float()
+        #import pdb; pdb.set_trace()
+        return (threshold_mask * E_high_masked - E_high_masked).detach() + E_high_masked
+    
+    def get_S(self,E,T,partition_mask):
+        E_high = self.get_E_high(partition_mask)
+        S = (E @ T @ torch.linalg.inv(E_high)) * partition_mask
+        threshold_mask = (torch.abs(S) > self.threshold).float()
+        return (threshold_mask * S - S).detach() + S
+    
+    def get_surjectivity_penalty(self):
+        hard_mask = F.one_hot(torch.argmax(self.W,dim=1), num_classes=self.n_high+1).float()
+        soft_probs = F.softmax(self.W, dim=1)
+        threshold_mask = (torch.abs(self.T)>self.threshold).float()
+        effective_mask = (hard_mask - soft_probs).detach() + soft_probs
+        
+        col_sums = effective_mask.sum(dim=0)
+        target_sums = torch.ones_like(col_sums)
+        target_sums[-1] = 0
+
+        return torch.sum(F.relu(target_sums - col_sums))
+    
+    def forward(self,E,temp,hard=False):
         E = torch.tensor(E).float()
-        T = T_mask*self.T
-        E_tilde = self._E_high()
+        T,partition_mask = self.get_T(temp=temp,hard=hard)
+        E_tilde = self.get_E_high(partition_mask)
+        S = self.get_S(E,T,partition_mask)
 
-        #impose causal sufficiency
-        partition = F.one_hot(torch.argmax(self.W,dim=1),num_classes=self.n_high).float()
-        S = E @ T @ torch.linalg.inv(E_tilde)
-        obs_loss = self.n_high * torch.norm((S*T_mask)@E_tilde -E@T, p=2)**2 #penalize any contribution from 'inactive' high-level nodes (those with no low-level nodes assigned)
-        #obs_loss = self.n_high * torch.norm(T @ E_tilde - E @ T, p=2)**2 #assuming S = T
+        obs_loss = self.n_high * torch.norm((S@E_tilde -E@T), p=2)**2 # how far is S from S * partition_mask?
         interv_loss = 0 
-        for j in range(self.n_high):
+        for j in range(self.n_high+1):
             #interventional loss
-            e_j = F.one_hot(torch.tensor(j),num_classes=self.n_high).float().reshape(self.n_high,1)
-            F_ss = torch.diag((T_mask@e_j).squeeze())  #low-level selection matrix
+            e_j = F.one_hot(torch.tensor(j),num_classes=self.n_high+1).float().reshape(self.n_high+1,1)
+            F_ss = torch.diag((partition_mask@e_j).squeeze())  #low-level selection matrix
             F_jj = (e_j@e_j.T)  #high-level selection matrix
             I = torch.eye(self.n_low)
             residual = (E-I) @ (torch.linalg.solve((I+F_ss @ (E-I)),I)@F_ss @ E @ T - T @ F_jj @ E_tilde)
             interv_loss += torch.norm(residual, p=2)**2
-            #loss += torch.norm(residual, p='fro')**2
 
         return obs_loss , interv_loss
     
-    def get_assignment_entropy(self):
-        probs = torch.softmax(self.W, dim=1)
-        entropy = -torch.sum(probs * torch.log(probs + 1e-9), dim=-1)
-        return entropy.mean()
-    
-    def _T(self):
-        partition = F.one_hot(torch.argmax(self.W,dim=1),num_classes=self.n_high).float()
-        T = partition * self.T
-        return T
-    
-    def _E_high(self):
-        T_mask = F.one_hot(torch.argmax(self.W,dim=1),num_classes=self.n_high).float()
-        active_nodes = (T_mask.sum(dim=0) > 0).float() # Shape: (n_high,)
-        interaction_mask = active_nodes.unsqueeze(0) * active_nodes.unsqueeze(1)
-        
-        # Apply logic:
-        # 1. Start with strictly upper triangular E_high
-        # 2. Mask out interactions involving 'inactive' high-level nodes (those with no low-level nodes assigned)
-        # 3. Add the FULL identity matrix back (ensures diag is all 1s -> determinant is 1)
-        E_high = (self.E_high * self.mask) * interaction_mask + self.identity
-        return E_high
 @dataclass
 class TrainingConfig:
     max_epochs: int = 10000
     lr: float = 0.01
     acceptable_loss: float = 1e-4
     entropy_pen: float = 0.
+    surjectivity_pen: float = 10.
+    scale_pen: float = 1.
     verbose: bool = True
+    threshold: float = 1e-8
     temp: float = 5.0
     temp_min: float = 0.1
     anneal_rate: float = 0.0005
     hard: bool = True
     fine_tune_epochs: int = 2000
+
 def log(msg,verbose=True):
         if verbose: print(msg)
 
-def gumbel_grad(E,n_high,train_config=TrainingConfig(),W=None,**kwds):
+def gumbel_grad(E,n_high,train_config=TrainingConfig(),W=None,E_high_mask=None,**kwds):
     n_low = E.shape[0]
-    model = CausalLearner(n_low, n_high)
+    model = CausalLearner(n_low, n_high, threshold=train_config.threshold, W=W, E_high_mask=E_high_mask)
     model.set_W(W, requires_grad=True)
     optimizer = torch.optim.Adam(model.parameters(), lr=train_config.lr)
     temp = train_config.temp
@@ -131,9 +167,10 @@ def gumbel_grad(E,n_high,train_config=TrainingConfig(),W=None,**kwds):
         optimizer.zero_grad()
         obs_loss, interv_loss = model(E, temp, hard=train_config.hard)
         loss = obs_loss + interv_loss
-        entropy = model.get_assignment_entropy().item()
-        entropy_loss = train_config.entropy_pen  *  entropy
-        total_loss = loss + entropy_loss
+
+        entropy_loss = train_config.entropy_pen  *  model.get_assignment_entropy().item()
+        surjectivity_loss = train_config.surjectivity_pen * model.get_surjectivity_penalty().item()
+        total_loss = loss + entropy_loss + surjectivity_loss
         model.eval() # Temporarily switch to argmax mode
         with torch.no_grad():
             current_obs_loss, current_interv_loss = model(E, temp, hard=True)
@@ -156,9 +193,9 @@ def gumbel_grad(E,n_high,train_config=TrainingConfig(),W=None,**kwds):
         optimizer.step()
         temp = max(train_config.temp_min, temp* (1 - train_config.anneal_rate))
         if epoch % 100 == 0:
-            log(f"Epoch {epoch}, ObsLoss: {obs_loss.item()}, IntervLoss: {interv_loss.item()}, Temp: {temp}",train_config.verbose)
+            log(f"Epoch {epoch}, ObsLoss: {obs_loss.item()}, IntervLoss: {interv_loss.item()}, SurjectivityLoss: {surjectivity_loss}, Temp: {temp}",train_config.verbose)
 
-    best_model = CausalLearner(n_low, n_high)
+    best_model = CausalLearner(n_low, n_high, threshold=train_config.threshold)
     best_model.load_state_dict(best_state)
     best_model.eval()
     best_model.W.requires_grad = False
@@ -169,16 +206,27 @@ def gumbel_grad(E,n_high,train_config=TrainingConfig(),W=None,**kwds):
         optimizer.zero_grad()
         obs_loss, interv_loss = best_model(E, temp=0.1, hard=True)
         loss = obs_loss + interv_loss
+
+        T,partition_mask = best_model.get_T()
+        col_norms = torch.norm(T,p=2,dim=0)/n_low
+        active_nodes = (partition_mask.sum(dim=0)>0).float()
+        margin = 10 * best_model.threshold
+        target_norms = torch.ones_like(col_norms) * 0.1
+        target_norms[-1] = 0
+        scale_loss = train_config.scale_pen * torch.sum(active_nodes * F.relu(target_norms - col_norms))
+
+
+        total_loss = loss + scale_loss
         if loss.item() < best_val_loss:
             best_val_loss = loss.item()
             best_state = {k:v.cpu().clone() for k,v in best_model.state_dict().items()}
         history['obs_loss'].append(obs_loss.item())
         history['interv_loss'].append(interv_loss.item())
         history['entropy'].append(best_model.get_assignment_entropy().item())
-        loss.backward()
+        total_loss.backward()
         optimizer.step()
         if epoch % 100 == 0:
-            log(f"Fine-tuning Epoch {epoch}, ObsLoss: {obs_loss.item()}, IntervLoss: {interv_loss.item()}")
+            log(f"Fine-tuning Epoch {epoch}, ObsLoss: {obs_loss.item()}, IntervLoss: {interv_loss.item()}, ScaleLoss: {scale_loss.item()}",train_config.verbose)
     
     best_model.load_state_dict(best_state)
     best_model.eval()
@@ -190,13 +238,15 @@ def gumbel_grad(E,n_high,train_config=TrainingConfig(),W=None,**kwds):
     return best_model, history
 
 if __name__ == "__main__":
-    seed = None
+    seed = None #23 sometimes gives an example of zero loss but graphical violations
     n_low = 5
     n_high = 3
-    #A_low = random_dag(n_low, edge_density=0.5, weight_mean=0, weight_std=1, seed=seed)
-    A_high_gt = random_dag(n_high, edge_density=0.5, weight_mean=0, weight_std=2, seed=seed)
-    T_gt,block_size = generate_random_T(n_low, n_high, T_range=(-1.5, 1.5), seed=seed)
-    A_low,S_gt= sample_linear_concretization(A_high_gt,T_gt,block_size,internal=False)
+    marg_prob = 0.2
+    T_lower = (-2,1)
+    T_upper = (-1,2)
+    edge_density = 0.2
+
+    A_low,T_gt,S_gt,A_high_gt = sample_low_level_graph(n_high=n_high,n_low=n_low,density=edge_density,T_lower=T_lower,T_upper=T_upper,marg_prob=marg_prob,seed=seed)
     E_low = np.linalg.inv(np.eye(n_low) - A_low)
     
     plot_matrix(
@@ -206,29 +256,31 @@ if __name__ == "__main__":
     )
     visualize_causal_graph(A_low, A_high_gt, T_gt, S_gt, title='Ground Truth Causal Abstraction')
 
-    ORACLE = True
+    ORACLE = False
     if ORACLE:
-        train_config = TrainingConfig(max_epochs=0, lr=0.01, acceptable_loss=0, entropy_pen=0., verbose=True, temp=10.0, temp_min=0.1, anneal_rate=0.0005, hard=True, fine_tune_epochs=5000)
-        model,history = gumbel_grad(E_low,n_high,train_config,W=torch.tensor(T_gt != 0).float())
+        E_high_gt = torch.linalg.inv(torch.eye(n_high) - A_high_gt)
+        train_config = TrainingConfig(max_epochs=0, lr=0.01, acceptable_loss=0, entropy_pen=0., verbose=True, threshold= 1e-8, temp=10.0, temp_min=0.1, anneal_rate=0.0005, hard=True, fine_tune_epochs=5000)
+        model,history = gumbel_grad(E_low,n_high,train_config,W=torch.tensor(S_gt != 0).float(),E_high_mask=(E_high_gt!=0))
     else:
         train_config = TrainingConfig(max_epochs=4000, lr=0.01, acceptable_loss=0, entropy_pen=0., verbose=True, temp=10.0, temp_min=0.1, anneal_rate=0.0005, hard=True, fine_tune_epochs=1000)
         model,history = gumbel_grad(E_low,n_high,train_config,W=None)
     
     
-    partition = F.one_hot(torch.argmax(model.W,dim=1),num_classes=model.n_high).float().detach().cpu().numpy()
-    T_pred = model.T.detach().cpu().numpy() * partition
-    active_nodes = (partition.sum(axis=0) > 0).astype(float) # Shape: (n_high,)
+    T_pred,partition_mask = model.get_T()
+    T_pred = T_pred[:,:-1].detach().cpu().numpy()
+    partition_mask = partition_mask[:,:-1].detach().cpu().numpy()
+    active_nodes = (partition_mask.sum(axis=0) > 0).astype(float) # Shape: (n_high,)
     print(f"Active nodes (high-level): {active_nodes}")
-    E_high = model._E_high().detach().cpu().numpy()
-    S_pred = E_low @ T_pred @ np.linalg.inv(E_high) * partition
+    E_high = model.get_E_high()[:-1,:-1].detach().cpu().numpy()
+    S_pred = (E_low @ T_pred @ np.linalg.inv(E_high)) * partition_mask
     A_high = np.eye(n_high) - np.linalg.inv(E_high)
     observed_loss = np.linalg.norm(S_pred@E_high - E_low @ T_pred, ord=1)
     print(f"Observed Loss (L1 norm): {observed_loss:.4f}")
     print(f"E_low:\n{E_low}")
     print(f"T_pred:\n{T_pred}")
-    print(f"E_high:\n{E_high}")
     print(f"S_pred:\n{S_pred}")
-
+    print(f"E_high:\n{E_high}")
+    
     visualize_causal_graph(A_low, A_high, T_pred, S_pred, title='Learned Causal Abstraction')
 
     

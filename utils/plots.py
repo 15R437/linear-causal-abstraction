@@ -4,6 +4,7 @@ import numpy as np
 import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
+from matplotlib.ticker import MultipleLocator,ScalarFormatter,MaxNLocator
 import matplotlib.cm as cm
 from itertools import combinations
 
@@ -262,4 +263,41 @@ def plot_matrix(matrix_list,title_list,fig_title=''):
         fig.colorbar(im,ax=ax[idx],fraction=0.046,pad=0.04,shrink=0.8)
     
     fig.suptitle(fig_title,fontsize=16,fontweight='bold')
+    plt.show()
+
+def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None):
+    # 1. Filter data
+    df = results_df.copy()
+    if approaches:
+        df = df[df['Approach'].isin(approaches)]
+    
+    for c, val in fixed_vars.items():
+        if c in df.columns:               
+            df = df[df[c] == val]
+    
+    
+    #a grid of plots
+    sns.set_theme(style="whitegrid")
+    grid = sns.FacetGrid(df, row=row, col=col, hue='Approach', 
+                    height=6, aspect=1.5, palette='Set2', sharey=False)
+
+    grid.map_dataframe(sns.lineplot, x=x_axis, y=y_axis, marker='o', errorbar='se')
+
+    if x_axis=='sample_size':
+        for ax in grid.axes.flat:
+            ax.set_xscale('log', base=2)
+    elif x_axis=='k':
+        for ax in grid.axes.flat:
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=10,integer=True))
+    grid.set_axis_labels(x_axis, f"Average {y_axis}")
+    grid.add_legend(title="Approach")
+    row_tmpl = "{row_name} " + row if row else ""
+    col_tmpl = "{col_name} " + col if col else ""
+    grid.set_titles(row_template=row_tmpl, col_template=col_tmpl)
+    
+    title_str = f"Average {y_axis}"
+    if row or col:
+        title_str += f" grouped by {row if row else ''} {col if col else ''}"
+    grid.figure.suptitle(title_str, y=0.98)
+
     plt.show()
