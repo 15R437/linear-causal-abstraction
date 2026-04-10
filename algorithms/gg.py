@@ -18,7 +18,7 @@ from utils.helper import reconstruct_adj
 from causabs.sampling import sample_linear_concretization
 
 class CausalLearner(nn.Module):
-    def __init__(self,n_low,n_high,threshold=1e-8,init_assignment=None,T_type='binary',learn_A_high=False,marginalise=False):
+    def __init__(self,n_low,n_high,threshold=1e-8,init_assignment=None,T_type='binary',learn_A_high=True,marginalise=False):
         super().__init__()
         self.n_low = n_low
         self.n_high = n_high
@@ -49,7 +49,7 @@ class CausalLearner(nn.Module):
     def set_A_high(self):
         self.A_high = nn.Parameter(torch.randn(self.n_high,self.n_high),requires_grad=True)
         
-        A_high_mask = torch.ones(self.n_high,self.n_high) - torch.eye(self.n_high)
+        A_high_mask = torch.triu(torch.ones(self.n_high,self.n_high), diagonal=1)
         self.register_buffer('A_high_mask', A_high_mask)
 
     def set_T(self,T_type,marginalise):
@@ -161,11 +161,12 @@ class CausalLearner(nn.Module):
             rhs = torch.einsum('kl,ilm,mj->ijk',(E-I), F_pi, T)
 
             intv_loss = torch.mean((lhs - rhs)**2)
-            dag_loss = torch.trace(torch.matrix_exp(A_high * A_high)) - self.n_high
+            #dag_loss = torch.trace(torch.matrix_exp(A_high * A_high)) - self.n_high
 
+            Z = E @ T
             S = E @ T @ (I_high - A_high) 
             S_masked = S * partition_mask
-            obs_loss = torch.mean((S - S_masked)**2) + dag_loss
+            obs_loss = torch.mean((S - S_masked.detach())**2) #+ dag_loss
 
             E_high = torch.linalg.inv(I_high - A_high).detach()
             E_high.fill_diagonal_(1.0)
@@ -179,8 +180,7 @@ class CausalLearner(nn.Module):
             b_norm = torch.sum(rhs * rhs, dim=-1)
             E_high_ij = dot_prod/(b_norm + 1e-12)
 
-            E_high_mask = torch.ones_like(E_high_ij)
-            E_high_mask.fill_diagonal_(0)
+            E_high_mask = torch.triu(torch.ones_like(E_high_ij), diagonal=1)
             I_high = torch.eye(self.n_high,device=device)
             E_high = E_high_ij * E_high_mask + I_high
 
@@ -196,12 +196,9 @@ class CausalLearner(nn.Module):
                 intv_loss = torch.mean((lhs - E_high.unsqueeze(-1) * rhs)**2)
         
 
-            try:   
-                S = self.get_S(partition_mask_full,T,E,E_high)
-                obs_loss = torch.mean((S @ E_high - E @T)**2)
-            except RuntimeError:
-                obs_loss = torch.tensor(10.0, requires_grad=True, device=E.device)
-
+              
+            S = self.get_S(partition_mask_full,T,E,E_high)
+            obs_loss = torch.mean((S @ E_high - E @T)**2)
 
         return obs_loss, intv_loss, T, E_high, partition_mask_full
 
@@ -211,7 +208,7 @@ class TrainingConfig:
     lr: float = 0.01
     acceptable_loss: float = 1e-4
     marginalization_pen: float = 1.
-    reconstruction_pen: float = 1.
+    reconstruction_pen: float = 1e-6
     surjectivity_pen: float = 1.
     dag_pen: float = 1.
     verbose: bool = True

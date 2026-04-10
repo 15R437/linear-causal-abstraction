@@ -114,15 +114,22 @@ def T_concretisation_sampling(A_high,T,edge_density=0.3,seed=None,max_abs_weight
     
     return A_low
 
-def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),marg_prob=0,seed=None,max_attempts=10):
-    adj_structure = (random_dag(n_high,density, seed=seed) != 0).astype(float)
+def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),marg_prob=0,seed=None,max_attempts=10,shuffle=False,internal=False):
     rng = np.random.default_rng(seed)
     for _ in range(max_attempts):
+        adj_structure = (random_dag(n_high,density, seed=seed) != 0).astype(float)
         weights = rng.normal(0, 0.5, size=adj_structure.shape)
         A_high_gt = adj_structure * weights
         try:
             T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=seed)
-            A_low, S_gt = sample_linear_concretization(A_high_gt,T_gt,block_size,internal=False,alpha=1.,style='uniform')
+            A_low, S_gt = sample_linear_concretization(A_high_gt,T_gt,block_size,internal=internal,alpha=1.,style='uniform')
+            assert np.any(A_low != 0) #ensure we don't return a trivial graph with no edges
+            if shuffle:
+                perm = rng.permutation(n_low)
+                A_low = A_low[perm][:,perm]
+                T_gt = T_gt[perm][:,:]
+                S_gt = S_gt[perm][:,:]
+        
             return A_low,T_gt,S_gt,A_high_gt
         except:
             pass
@@ -134,7 +141,7 @@ def sample_gennorm_lingam_population_standardized(A_gt_mat, n_samples, gennorm_p
     I = np.eye(n)
     E = np.linalg.inv(I - A_gt_mat)
     exogenous_data = gennorm.rvs(gennorm_param, loc=0, scale=1, size=(n_samples, n))
-    X = exogenous_data @ E.T
+    X = exogenous_data @ E
     return X
 
 if __name__ == "__main__":
