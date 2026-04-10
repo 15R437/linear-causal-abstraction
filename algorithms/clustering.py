@@ -1,7 +1,7 @@
 import numpy as np
 import copy
 from sklearn.linear_model import LinearRegression
-from causal_experiments.losses import reconstruction_rmse
+from utils.losses import reconstruction_rmse
 
 def merge(E,i,j):
     """

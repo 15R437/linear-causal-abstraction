@@ -155,32 +155,32 @@ def find_valid_clusters(A,A_high,node,assignment_map,seed=None):
 
     return valid_clusters
 
-def find_valid_alignment(A,k,init_clusters=None,seed=None,verbose=False):
+def find_valid_alignment(A_low,n_high,init_clusters=None,seed=None,verbose=False):
     #this version orders the weights in A in descending order and tries to preserve the strongest weights first.
     rng = np.random.default_rng(seed)
-    n_low = A.shape[0]
-    A_high = np.zeros((k, k))
+    n_low = A_low.shape[0]
+    A_high = np.zeros((n_high, n_high))
     if init_clusters is None:
         init_clusters = {}
     else:
         for i,sublist1 in init_clusters.items():
             for j,sublist2 in init_clusters.items():
                 if i != j:
-                    if np.any(A[np.ix_(sublist1, sublist2)] != 0):
+                    if np.any(A_low[np.ix_(sublist1, sublist2)] != 0):
                         A_high[i, j] = 1
     
     #print(f"A_high \n {A_high}")
-    clusters = init_clusters | {i: [] for i in range(-1,k) if i not in list(init_clusters.keys())}
+    clusters = init_clusters | {i: [] for i in range(-1,n_high) if i not in list(init_clusters.keys())}
     assignment_map = {val: i for i, sublist in init_clusters.items() for val in sublist}
     assigned = [val for sublist in init_clusters.values() for val in sublist]
     
-    assert is_valid_alignment(A, A_high, assignment_map), is_valid_alignment(A, A_high, assignment_map, verbose=True)
+    assert is_valid_alignment(A_low, A_high, assignment_map), is_valid_alignment(A_low, A_high, assignment_map, verbose=True)
     
     # sort weights in descending order of magnitude!
     weight_list = []
     for i in range(n_low):
         for j in range(n_low):
-            weight_list.append((i,j,abs(A[i,j])))
+            weight_list.append((i,j,abs(A_low[i,j])))
 
     weight_list.sort(key=lambda x: x[2], reverse=True) 
 
@@ -195,7 +195,7 @@ def find_valid_alignment(A,k,init_clusters=None,seed=None,verbose=False):
                     continue
                 
                 
-                valid_clusters = find_valid_clusters(A,A_high,node,assignment_map)
+                valid_clusters = find_valid_clusters(A_low,A_high,node,assignment_map)
                 
                 if not valid_clusters:
                     log(f"No valid cluster found for node X{node+1}. Adding to bin...",verbose)
@@ -210,9 +210,9 @@ def find_valid_alignment(A,k,init_clusters=None,seed=None,verbose=False):
                         valid_clusters_subset = valid_clusters
 
                     _,assignment_map,A_high = random.choice(valid_clusters_subset)
-                    clusters = {i: [] for i in range(-1, k)}
+                    clusters = {i: [] for i in range(-1, n_high)}
                     for n_idx, c_idx in assignment_map.items():
-                        if n_idx < A.shape[0]:
+                        if n_idx < A_low.shape[0]:
                             clusters[c_idx].append(n_idx)
                     
                     msg = f"Assigning node X{node+1} to cluster Y{assignment_map[node]+1} from valid options {['Y'+str(c[1][node]+1) for c in valid_clusters]}"
