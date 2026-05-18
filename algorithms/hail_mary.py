@@ -83,6 +83,25 @@ def intra_cluster_dist(A_low,T):
 
     return out_variance.sum() + in_variance.sum()
 
+def intra_cluster_penalty(A_low, T):
+    """
+    Penalises edges between low-level variables in the same cluster.
+    
+    Args:
+        A_low (Tensor): Low-level adjacency matrix of shape (n_low, n_low)
+        T (Tensor): Assignment matrix of shape (n_low, n_high)
+    Returns:
+        Tensor: Scalar penalty representing internal edge weights.
+    """
+    T_float = T.float()
+    co_assignment = T_float @ T_float.t()
+    internal_edges = co_assignment * (A_low ** 2)
+    
+    diag_mask = torch.eye(A_low.shape[0], device=A_low.device)
+    internal_edges = internal_edges * (1.0 - diag_mask)
+
+    return internal_edges.mean()
+
 class HailMary(nn.Module):
     def __init__(self, n_low, n_high, E, T_type='binary', init_assignment=None, threshold=0.5):
         super().__init__()
@@ -109,10 +128,6 @@ class HailMary(nn.Module):
             high_level_indices = assignment_tensor[valid_mask]
             A_mask[low_level_indices] = 0.0
             A_mask[low_level_indices, high_level_indices] = 1.0
-        else:
-        #fix the first low-level variable to the first high-level variable
-            A_mask[0] = 0
-            A_mask[0,0] = 1.0
 
         self.register_buffer('A_mask', A_mask)
         self.register_buffer('E_high_mask',torch.ones(n_high, n_high,device=self.device) - torch.eye(n_high, device=self.device))
@@ -190,7 +205,7 @@ class HailMary(nn.Module):
             regularisation_loss = F.binary_cross_entropy(W,A)
         except:
             import pdb;pdb.set_trace()
-        recon_loss = intra_cluster_dist(A_low,T)/inter_cluster_dist(A_low,T)#torch.log(intra_cluster_dist(A_low,T))  - torch.log(inter_cluster_dist(A_low,T))
+        recon_loss = intra_cluster_penalty(A_low=A_low,T=T) #intra_cluster_dist(A_low,T)/inter_cluster_dist(A_low,T)#torch.log(intra_cluster_dist(A_low,T))  - torch.log(inter_cluster_dist(A_low,T))
 
         I = torch.eye(self.n_low,device=self.device)
         I_high = torch.eye(self.n_high,device=self.device)
@@ -306,7 +321,7 @@ if __name__ == "__main__":
 
     model = HailMary(n_low, n_high, E)
     num_epochs = 1000 * int(np.log10(n_low))
-    history = model.train(num_epochs=num_epochs, abs_param=1e4, reg_min=1, reg_max=1,verbose=True, keep_history=True)
+    history = model.train(num_epochs=num_epochs, abs_param=10, reg_min=1, reg_max=1,verbose=True, keep_history=True)
     S,T, E_high, W, A = model.get_params()
     S_pred, T_pred, A_high_pred = process_output(S,T,E_high)
     
