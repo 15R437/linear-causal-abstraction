@@ -1,4 +1,10 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.getcwd()))
+
 import matplotlib.pyplot as plt
+import torch
+from algorithms.hail_mary import HailMary
 import seaborn as sns
 import numpy as np
 import networkx as nx
@@ -300,3 +306,72 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     grid.figure.suptitle(title_str, y=0.98)
 
     plt.show()
+
+def plot_loss_landscape(E, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
+        """
+        Visualises the loss wrt parameters in T.
+        
+        Params:
+            E (np.ndarray): low-level total effect matrix
+            T_gt (np.ndarray): ground truth abstraction matrix
+            idx1 (int): index of parameter in T to vary
+            idx2 (int, optional): index of second parameter in T to vary.
+        """
+
+        n_low, n_high = T_gt.shape
+        assert n_high == 2, "Only supports 2 high-level varaibles"
+
+        T_gt = (T_gt != 0).astype(float) #convert to binary for visualisation
+        W = (T_gt != 0).astype(float)
+        flip_mask = (np.random.rand(W.shape[0]) < flip_prob)[:,None] * np.ones_like(W)
+        W = (1 - W) * flip_mask + W * (1 - flip_mask)
+
+        t1_values = np.linspace(0,1,n_points)
+        model = HailMary(n_low=n_low, n_high=n_high, E=E, T_type='binary')
+        if idx2 is None:
+            losses = []
+            for t1 in t1_values:
+                W[idx1,0] = t1
+                W[idx1,1] = 1-t1
+                recon_loss, obs_loss, intv_loss, _, _, _, _ = model(W=torch.from_numpy(W).float())
+                losses.append((recon_loss.item(), obs_loss.item(), intv_loss.item()))
+
+            recon_losses, obs_losses, intv_losses = zip(*losses)
+            plt.plot(t1_values, recon_losses, label='Reconstruction Loss')
+            plt.plot(t1_values, obs_losses, label='Observation Loss')
+            plt.plot(t1_values, intv_losses, label='Intervention Loss')
+            plt.xlabel(f'T_value for low-level variable {idx1}')
+            plt.ylabel('Loss')
+            plt.title('Loss Landscape')
+            plt.legend()
+            plt.show()
+        else:
+            losses = []
+            t2_values = np.linspace(0,1,n_points)
+            for t1 in t1_values:
+                row_losses = []
+                W[idx1,0] = t1
+                W[idx1,1] = 1-t1
+                for t2 in t2_values:
+                    W[idx2,0] = t2
+                    W[idx2,1] = 1-t2
+                    recon_loss, obs_loss, intv_loss, _, _, _, _ = model(W=torch.from_numpy(W).float())
+                    row_losses.append((recon_loss.item(), obs_loss.item(), intv_loss.item()))
+                losses.append(row_losses)
+            
+            fig, ax = plt.subplots(1,3,figsize=(10,8))
+            for i, loss_name in enumerate(['Reconstruction Loss','Observation Loss','Intervention Loss']):
+                specific_loss = np.array([[loss[i] for loss in row] for row in losses])
+                im1 = ax[i].imshow(specific_loss, cmap='Blues', origin='lower')
+                ax[i].set_title(loss_name)
+                fig.colorbar(im1, ax=ax[i])  # Colorbar for subplot 1
+
+                ax[i].set_xlabel(f'low-level variable {idx2}')
+                ax[i].set_ylabel(f'low-level variable {idx1}')
+
+                gt_x = T_gt[idx2, 0] * n_points  # scale from [0,1] to [0,n_points]
+                gt_y = T_gt[idx1, 0] * n_points
+                ax[i].scatter([gt_x], [gt_y], color='red', marker='*', s=200, label='Ground truth')
+                #ax[i].legend()
+            
+            plt.show()

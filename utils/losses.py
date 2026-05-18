@@ -1,11 +1,28 @@
 import numpy as np
 import torch
-#from unsupervised_causal_reduction.causal_model.high_level import HighLevelCausalModel #type: ignore
-#from unsupervised_causal_reduction.data_generators.linear import LinearCausalModel #type: ignore
-#from unsupervised_causal_reduction.abstraction.causal_abstraction import CausalAbstraction #type: ignore
-#from unsupervised_causal_reduction.lightning.targeted_causal_reduction import UnsupervisedCausalAbstractionModel #type: ignore
+import sys
+from pathlib import Path
 
-def reconstruction_rmse(A_hat,X):
+# 1. Get the directory of uca.py (/Users/issy/Projects/linear-causal-abstraction/algorithms)
+current_script_dir = Path(__file__).resolve().parent
+# 2. Go up TWO levels to reach /Users/issy/Projects/
+projects_root = current_script_dir.parent.parent
+# 3. Point to the folder that CONTAINS the 'unsupervised_causal_reduction' package
+target_project_dir = projects_root / 'targeted-causal-reduction-unsupervisedAbstraction'
+
+sys.path.append(str(target_project_dir))
+from unsupervised_causal_reduction.causal_model.high_level import HighLevelCausalModel #type: ignore
+from unsupervised_causal_reduction.data_generators.linear import LinearCausalModel #type: ignore
+from unsupervised_causal_reduction.abstraction.causal_abstraction import CausalAbstraction #type: ignore
+from unsupervised_causal_reduction.lightning.targeted_causal_reduction import UnsupervisedCausalAbstractionModel #type: ignore
+"""
+loss_fn should take as input:
+    A_high, A_low, A_hat, T, X
+"""
+def reconstruction_loss(A_low,A_hat,**kwds):
+    return np.mean((A_low - A_hat)**2)
+
+def reconstruction_loss_with_data(A_hat,X, **kwds):
     """
     Params
         A_hat (np.ndarray): (n_low x n_low) adjacency matrix assumed to be upper-triangular under topological ordering
@@ -18,21 +35,15 @@ def reconstruction_rmse(A_hat,X):
     RMSE = np.sqrt(np.mean(residual**2))
     return RMSE
 
-def frob_norm(pred,gt):
-    if pred is None:
-        return np.nan
-    return np.linalg.norm(pred-gt,ord='fro')/np.linalg.norm(gt,ord='fro')
-
-"""
-def kl_loss(A_high,A_low,T):
-    
+def kl_loss(A_high,A_low,T,**kwds):
+    """
     Parameters
-        E_high (numpy.ndarray): Total treatment effect matrix for high-level model. X_tilde (k x 1) = E_high @ U_tilde. 
-        E_low (numpy.ndarray): Total treatment effect matrix for low-level model. X (p x 1) = E_low @ U.
+        A_high (numpy.ndarray): Adjacency matrix for high-level model. X_tilde (k x 1) = E_high @ U_tilde. 
+        A_low (numpy.ndarray): Adjacency matrix for low-level model. X (p x 1) = E_low @ U.
         T (numpy.ndrray): Linear abstraction matrix. X_tilde (k x 1) = T @ X
     Returns
         results (dict): 
-
+    """
     if T is None or A_high is None:
         return np.nan
     T = T.T
@@ -48,7 +59,46 @@ def kl_loss(A_high,A_low,T):
     _,results = uca_model._training_step()
 
     return results['consistency_loss'].item()
-"""
+
+def observation_loss(A_low,A_high,S,T,**kwds):
+    I_low = np.eye(A_low.shape[0])
+    I_high = np.eye(A_high.shape[0])
+
+    lhs = (I_low - A_low) @ S
+    rhs = T @ (I_high - A_high)
+    obs_loss = np.mean((lhs - rhs)**2)
+    return obs_loss
+
+def intervention_loss(E_low,S,T,**kwds):
+    n_low,n_high = T.shape
+    partition_mask = (T != 0).astype(int)
+
+    I_low = np.eye(n_low)
+    
+    F_pi = partition_mask.T[...,None] * I_low
+    term = I_low + F_pi @ (E_low - I_low)
+
+    lhs = F_pi @ S[None,...]
+    rhs = term @ F_pi @ T[None,...]
+    intv_loss = np.sum(np.mean((lhs - rhs)**2,axis=(-2,-1)))
+
+    return intv_loss
+
+def abstraction_loss(E_low,A_low,A_high,S,T,**kwds):
+    obs_loss = observation_loss(A_low=A_low, A_high=A_high, S=S, T=T)
+    intv_loss = intervention_loss(E_low=E_low, S=S, T=T)
+    return obs_loss + intv_loss
+
+def heuristic_cost(A_low, c1_nodes, c2_nodes, **kwds):
+    out_diff = np.mean(A_low[c1_nodes, :], axis=0) - np.mean(A_low[c2_nodes, :], axis=0)
+    in_diff  = np.mean(A_low[:, c1_nodes], axis=1) - np.mean(A_low[:, c2_nodes], axis=1)
+    
+    return np.sum(out_diff**2) + np.sum(in_diff**2)
+
+def frob_norm(pred,gt):
+    if pred is None:
+        return np.nan
+    return np.linalg.norm(pred-gt,ord='fro')/np.linalg.norm(gt,ord='fro')
 
 def rand_index(T_gt,T_pred,**kwds):
     p,k = T_gt.shape

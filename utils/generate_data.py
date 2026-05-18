@@ -118,7 +118,7 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),ma
     rng = np.random.default_rng(seed)
     for _ in range(max_attempts):
         adj_structure = (random_dag(n_high,density, seed=seed) != 0).astype(float)
-        weights = rng.normal(0, 0.5, size=adj_structure.shape)
+        weights = rng.normal(0, 1, size=adj_structure.shape)
         A_high_gt = adj_structure * weights
         try:
             T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=seed)
