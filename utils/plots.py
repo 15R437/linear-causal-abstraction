@@ -307,12 +307,12 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
 
     plt.show()
 
-def plot_loss_landscape(E, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
+def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
         """
         Visualises the loss wrt parameters in T.
         
         Params:
-            E (np.ndarray): low-level total effect matrix
+            A_low (np.ndarray): low-level adjacency matrix
             T_gt (np.ndarray): ground truth abstraction matrix
             idx1 (int): index of parameter in T to vary
             idx2 (int, optional): index of second parameter in T to vary.
@@ -327,7 +327,7 @@ def plot_loss_landscape(E, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
         W = (1 - W) * flip_mask + W * (1 - flip_mask)
 
         t1_values = np.linspace(0,1,n_points)
-        model = HailMary(n_low=n_low, n_high=n_high, E=E, T_type='binary')
+        model = HailMary(n_low=n_low, n_high=n_high, E=A_low, T_type='binary')
         if idx2 is None:
             losses = []
             for t1 in t1_values:
