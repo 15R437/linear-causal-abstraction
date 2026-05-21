@@ -540,7 +540,24 @@ def heuristic_cost(A_low, c1_nodes, c2_nodes):
 
     return np.sum(out_diff**2) + np.sum(in_diff**2)
 
-def hierarchical_clustering(A_low,init_assignment=None,loss_list=[heuristic_cost],n_high=1):
+def merge_A_high(A_high, A_low, T, i, j):
+    """Update A_high incrementally after merging clusters i and j into i."""
+    n_low, n_high = T.shape
+    # New combined column (unnormalised)
+    t_new = T[:, i] + T[:, j]  # T[:, j] is about to be removed
+    t_new_norm = t_new / (np.linalg.norm(t_new) + 1e-8)
+    
+    # Only update row i and column i — O(k * n_low)
+    A_high[i, :] = t_new_norm @ A_low @ T          # new row
+    A_high[:, i] = (T / np.linalg.norm(T, axis=0, keepdims=True)).T @ A_low @ t_new  # new col
+    A_high[i, i] = 0.0
+    
+    # Remove row/col j
+    mask = np.ones(n_high, dtype=bool)
+    mask[j] = False
+    return A_high[np.ix_(mask, mask)]
+
+def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heuristic_cost]):
     n_low = A_low.shape[0]
     E_low = np.linalg.inv(np.eye(len(A_low)) - A_low)
     clusters_list = [[i] for i in range(n_low)]

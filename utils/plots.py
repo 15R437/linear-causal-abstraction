@@ -207,50 +207,7 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title=
     plt.axis('off')
     plt.show()
 
-def plot_experiment_results(df):
-    """
-    Plots the metrics (Rand Index, Frobenius Norm, Runtime) from the experiment results.
-    Assumes df has columns: ['method', 'repeat', 'metric', 'score']
-    """
-    # Filter out any None scores if a metric wasn't computed
-    df_plot = df.dropna(subset=['score'])
-    
-    # Set the visual style
-    sns.set_theme(style="whitegrid")
-    metrics = df_plot['metric'].unique()
-    n_metrics = len(metrics)
-    
-    fig, axes = plt.subplots(1, n_metrics, figsize=(6 * n_metrics, 5))
-    
-    # If there's only one metric, wrap axes in a list to allow iteration
-    if n_metrics == 1:
-        axes = [axes]
 
-    for ax, metric in zip(axes, metrics):
-        metric_data = df_plot[df_plot['metric'] == metric]
-        
-        # barplot automatically computes mean and 95% confidence interval (error bars)
-        sns.barplot(
-            data=metric_data, 
-            x='method', 
-            y='score', 
-            hue='method',      # Assign hue to the same variable as x
-            legend=False,      # Hide the legend since the x-axis labels cover it
-            ax=ax, 
-            palette='viridis',
-            capsize=.1
-        )
-        
-        ax.set_title(f'{metric.replace("_", " ").title()}', fontsize=10, fontweight='bold')
-        ax.set_ylabel('Score')
-        ax.set_xlabel('Method')
-        
-        # Improve readability if method names are long
-        if len(df_plot['method'].unique()) > 3:
-            ax.tick_params(axis='x', rotation=45)
-
-    plt.tight_layout()
-    plt.show()
 
 def plot_matrix(matrix_list,title_list,fig_title=''):
     assert(len(matrix_list)==len(title_list)), f"Expected matrix_list and title_list to have the same length. Got lists of length {len(matrix_list)} and {len(title_list)}."
@@ -284,7 +241,7 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     #a grid of plots
     sns.set_theme(style="whitegrid")
     grid = sns.FacetGrid(df, row=row, col=col, hue='Approach', 
-                    height=6, aspect=1.5, palette='Set2', sharey=False)
+                    height=8, aspect=1.5, palette='Set2', sharey=False)
 
     grid.map_dataframe(sns.lineplot, x=x_axis, y=y_axis, marker='o', errorbar='se')
 
@@ -296,8 +253,8 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
             ax.xaxis.set_major_locator(MaxNLocator(nbins=10,integer=True))
     grid.set_axis_labels(x_axis, f"Average {y_axis}")
     grid.add_legend(title="Approach")
-    row_tmpl = "{row_name} " + row if row else ""
-    col_tmpl = "{col_name} " + col if col else ""
+    row_tmpl = row + " = {row_name} " if row else ""
+    col_tmpl = col + " = {col_name} " if col else ""
     grid.set_titles(row_template=row_tmpl, col_template=col_tmpl)
     
     title_str = f"Average {y_axis}"
@@ -306,6 +263,12 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     grid.figure.suptitle(title_str, y=0.98)
 
     plt.show()
+
+def violin_plot(results_df,y_axis,fixed_vars={},row=None,col=None):
+    for c, val in fixed_vars.items():
+        if c in df.columns:               
+            df = df[df[c] == val]
+
 
 def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
         """

@@ -18,52 +18,36 @@ def galm_core(E_low, k, T_type='binary', init_assignment=None, warm_start=None, 
 
     return S_pred, T_pred, A_high
 
-def hail_mary_core(E_low, k, init_assignment=None, **kwds):
-    E_low_tensor = torch.from_numpy(E_low).to(torch.float32)
-    model = HailMary(n_low=E_low_tensor.shape[0], n_high=k, E=E_low_tensor, init_assignment=init_assignment)
-    model.train(num_epochs=1000, verbose=False)
-    S, T, E_high, W, A = model.get_params()
-    S_pred, T_pred, A_high = process_output(S, T, E_high)
+def hail_mary(A_low, k, init_assignment=None, **kwds):
+    A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
+    n_low = A_low.shape[0]
+    model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, init_assignment=init_assignment)
+    num_epochs = 1000 * int(np.log10(n_low))
+    model.train(num_epochs=num_epochs, verbose=False)
+
+    S_pred, T_pred, A_high = process_output(model)
 
     return S_pred, T_pred, A_high
 
-def hail_mary(E_low, init_assignment=None, **kwds):
-    n_low = E_low.shape[0]
+def hail_mary_sweep(A_low, init_assignment=None, **kwds):
+    n_low = A_low.shape[0]
     S_dict = {}
     T_dict = {}
     A_high_dict = {}
     for k in range(2,n_low):
-        S_pred, T_pred, A_high = hail_mary_core(E_low=E_low, k=k, init_assignment=init_assignment)
+        S_pred, T_pred, A_high = hail_mary(A_low=A_low, k=k, init_assignment=init_assignment)
         S_dict[k] = S_pred
         T_dict[k] = T_pred
         A_high_dict[k] = A_high
 
     return S_dict, T_dict, A_high_dict
 
-def galm(E_low, T_type='binary', init_assignment=None,**kwds):
-    n_low = E_low.shape[0]
-    S_dict = {}
-    T_dict = {}
-    A_high_dict = {}
-    for k in range(2,n_low):
-        S_pred, T_pred, A_high = galm_core(E_low=E_low, k=k, init_assignment=init_assignment, T_type=T_type)
-        S_dict[k] = S_pred
-        T_dict[k] = T_pred
-        A_high_dict[k] = A_high
+def hc_sweep(A_low, init_assignment=None, **kwds):
+    return hierarchical_clustering(A_low=A_low,init_assignment=init_assignment)
 
-    return S_dict, T_dict, A_high_dict
-
-def galm_binary(E_low, init_assignment=None, **kwds):
-    return galm(E_low, T_type='binary', init_assignment=init_assignment)
-
-def galm_simplex(E_low, init_assignment=None, **kwds):
-    return galm(E_low, T_type='simplex', init_assignment=init_assignment)
-
-def galm_sphere(E_low, init_assignment=None, **kwds):
-    return galm(E_low, T_type='sphere', init_assignment=init_assignment)
-
-def hc(A_low, init_assignment=None, **kwds):
-    return hierarchical_clustering(A_low=A_low, init_assignment=init_assignment)
+def hc(A_low, k, init_assignment=None, **kwds):
+    S_dict, T_dict, A_high_dict = hierarchical_clustering(A_low=A_low, n_high=k, init_assignment=init_assignment)
+    return S_dict[k], T_dict[k], A_high_dict[k]
 
 def hc_galm(A_low, E_low, init_assignment=None, **kwds):
     n_low = A_low.shape[0]

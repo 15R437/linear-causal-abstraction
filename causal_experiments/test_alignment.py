@@ -96,15 +96,13 @@ if __name__ == "__main__":
 
     seed = 42
     n_high_list = range(10,40,10)
-    ratio_list = [2**d for d in range(1,2)]
+    ratio_list = [2**d for d in range(2,3)]
     density_list = [0.4]
-    num_trials = 3
+    num_trials = 1
     n_samples_list = [100 * 2**d for d in range(4) ]
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    RUN_CLUSTERING = False
     RUN_ABSTRACTION_WITH_ADJACENCY = True
-    RUN_ABSTRACTION_WITH_DATA = False
 
     
     if RUN_ABSTRACTION_WITH_ADJACENCY:
@@ -126,27 +124,8 @@ if __name__ == "__main__":
         results_df.to_csv(filename, index=False)
         print(f"Results saved to {filename}")
     
-    if RUN_ABSTRACTION_WITH_DATA:
-        filename = 'results/initial_abstraction_with_data.csv' #f"results/initial-{timestamp}.csv"
-        os.makedirs(os.path.dirname(filename),exist_ok=True)
-        results_list = []
-        for n_high in n_high_list:
-            for ratio in ratio_list:
-                n_low = math.ceil(ratio*n_high)
-                for density in density_list:
-                    t_start = time.time()
-                    for n_samples in n_samples_list:
-                        for trial in range(num_trials):
-                            new_results = run_abstraction_with_data(n_high=n_high,n_low=n_low,density=density,n_samples=n_samples,seed=seed,trial=trial)
-                            results_list.extend(new_results)
-                    
-                        print(f"Time Taken (n_high={n_high}, n_low={n_low}, n_samples={n_samples}): {time.time()-t_start:.6f}s")
     
-        results_df = pd.DataFrame(results_list)
-        results_df.to_csv(filename, index=False)
-        print(f"Results saved to {filename}")
-    
-    cut_off = "20260512-130000"
+    cut_off = "20260520-210000"
     results_dir = Path("results/adjacency")
     csv_files = [f for f in results_dir.glob("*.csv") if f.stem >= cut_off]
 
@@ -164,7 +143,7 @@ if __name__ == "__main__":
     #plot_results(results_df,x_axis='k',y_axis='lost_weight_count',fixed_vars={'n_high':10,'n_low':20},row=None,col=None)
     plot_results(results_df,x_axis='n_low',y_axis='runtime',fixed_vars={'ratio':2},row=None,col=None)
     for loss_name in LOSSES.keys():
-        plot_results(results_df,x_axis='k',y_axis=loss_name,fixed_vars={'ratio':2},row=None,col='n_high')
+        plot_results(results_df[results_df['k'] >= results_df['n_high']], x_axis='k',y_axis=loss_name,fixed_vars={'ratio':4},row=None,col='n_high')
     
     
 

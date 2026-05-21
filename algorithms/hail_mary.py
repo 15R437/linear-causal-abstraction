@@ -36,16 +36,8 @@ def calculate_anneal_rate(t_start, t_min, max_epochs):
     
     return rate
 
-def get_reconstruction_loss(A_low, T, A_high=None, E_high=None, T_type='binary'):
-    if A_high is None:
-        n_high = E_high.shape[0]
-        A_high = torch.eye(n_high, device=E_high.device) - torch.linalg.inv(E_high)
-    if T_type == 'binary':
-        column_norms = torch.sum(T,dim=0)
-    elif T_type == 'simplex':
-        column_norms = torch.sum(T, dim=0)
-    elif T_type == 'sphere':
-        column_norms = torch.sqrt(torch.sum(T**2, dim=0))
+def reconstruction_loss(A_low, T, A_high):
+    column_norms = torch.sum(T,dim=0)
         
     T_norm = T / (column_norms + 1e-6)
     A_recon = T @ A_high @ T_norm.T
@@ -102,8 +94,19 @@ def intra_cluster_penalty(A_low, T):
 
     return internal_edges.mean()
 
+def balance_penalty(T_soft):
+    """
+    Penalises unequal cluster sizes.
+    Uses entropy of cluster sizes — maximised when all clusters are equal.
+    """
+    cluster_sizes = T_soft.sum(dim=0)  # (n_high,)
+    probs = cluster_sizes / cluster_sizes.sum()
+    entropy = -(probs * torch.log(probs + 1e-8)).sum()
+    max_entropy = torch.log(torch.tensor(T_soft.shape[1], dtype=torch.float))
+    return max_entropy - entropy  # 0 when perfectly balanced, positive otherwise
+
 class HailMary(nn.Module):
-    def __init__(self, n_low, n_high, A_low):
+    def __init__(self, n_low, n_high, A_low, init_assignment=None):
         super().__init__()
         self.n_low = n_low
         self.n_high = n_high
@@ -111,13 +114,19 @@ class HailMary(nn.Module):
         # One logit per (low-level var, high-level block) pair
         self.logits = nn.Parameter(torch.randn(n_low, n_high))
 
-    def get_partition(self):
+    def get_partition(self, temp=1.):
         # Soft assignment for gradients, hard for forward logic
-        T_soft = F.softmax(self.logits, dim=1)  # (n_low, n_high), rows sum to 1
+        T_soft = F.softmax(self.logits / temp, dim=1)  # (n_low, n_high), rows sum to 1
         indices = torch.argmax(self.logits, dim=1)
         T_hard = F.one_hot(indices, self.n_high).float()
         T = (T_hard - T_soft).detach() + T_soft  # straight-through
         return T, T_soft
+    
+    def get_S(self,T):
+        A_intra = T @ T.T * self.A_low
+        I_low = torch.eye(self.n_low, device=T.device)
+        S = torch.linalg.solve(I_low - A_intra, T)
+        return S
 
     def abstraction_residual(self, T):
         # For each block pair (i, j), compute || A_ij s_j - a*_ij t_i ||^2
@@ -139,71 +148,146 @@ class HailMary(nn.Module):
                 a_star = (t_i @ A_ij_s_j) / (t_i @ t_i + 1e-8)
                 residual = residual + torch.mean((A_ij_s_j - a_star * t_i) ** 2)
         return residual
-
-    def forward(self):
-        T, T_soft = self.get_partition()
-        # Main loss: abstraction residual
-        abs_loss = self.abstraction_residual(T)
-        # Surjectivity: every high-level block must have at least one member
-        surjective_loss = torch.sum(F.relu(1.0 - T_soft.sum(dim=0)))
-        return abs_loss, surjective_loss
     
-    def train_step(self, optimizer, reg_param=1.):
+    def vectorized_abstraction_residual(self, T):
+        """
+        Fully vectorized abstraction residual calculation (No loops).
+        Matches the loop version mathematically component-for-component.
+        """
+        n_low, n_high = T.shape
+        I_low = torch.eye(n_low, device=T.device)
+        
+        # --- 1. Compute s_j for all source clusters j simultaneously ---
+        # In your loop: A_jj = T[:, j:j+1] * self.A_low * T[:, j:j+1].T
+        # T.T has shape (n_high, n_low). We create a mask for each j.
+        # mask_jj shape: (n_high, n_low, n_low)
+        mask_jj = T.T.unsqueeze(-1) @ T.T.unsqueeze(-2)
+        A_intra_3d = mask_jj * self.A_low.unsqueeze(0)
+        
+        # Solve (I - A_jj)^-1 @ t_j for all j in parallel
+        # LHS shape: (n_high, n_low, n_low), RHS shape: (n_high, n_low, 1)
+        S_batched = torch.linalg.solve(
+            I_low.unsqueeze(0) - A_intra_3d, 
+            T.T.unsqueeze(-1)
+        )  # Shape: (n_high, n_low, 1)
+
+        # --- 2. Compute inter-cluster effects (A_ij @ s_j) for all pairs (i, j) ---
+        # In your loop: A_ij_s_j = (T[:, i:i+1] * self.A_low * T[:, j:j+1].T) @ s_j
+        # We construct a 4D tensor where dim 0 is target cluster i, and dim 1 is source cluster j.
+        # mask_ij shape: (n_high, n_high, n_low, n_low)
+        mask_ij = T.T.unsqueeze(1).unsqueeze(-1) @ T.T.unsqueeze(0).unsqueeze(-2)
+        A_inter_4d = mask_ij * self.A_low.unsqueeze(0).unsqueeze(0)
+        
+        # Align S_batched to be pulled from source index j (dim 1)
+        # Shape for multiplication: (1, n_high, n_low, 1)
+        S_expanded = S_batched.unsqueeze(0) 
+        
+        # Batch matrix multiply: (n_high, n_high, n_low, n_low) @ (1, n_high, n_low, 1)
+        # actual_effects shape: (n_high, n_high, n_low)
+        actual_effects = (A_inter_4d @ S_expanded).squeeze(-1)
+
+        # --- 3. Compute optimal scalars (a_star) for all pairs ---
+        # t_i needs to be structured to map to target index i (dim 0)
+        # t_i_expanded shape: (n_high, n_high, n_low)
+        t_i_expanded = T.T.unsqueeze(1).expand(-1, n_high, -1)
+        
+        # Dot product sums over the low-level variable axis (dim -1)
+        dot_prods = torch.sum(t_i_expanded * actual_effects, dim=-1, keepdim=True)
+        t_i_norms = torch.sum(t_i_expanded * t_i_expanded, dim=-1, keepdim=True)
+        
+        a_star = dot_prods / (t_i_norms + 1e-8)  # Shape: (n_high, n_high, 1)
+
+        # --- 4. Compute target uniform profile and residuals ---
+        target_effects = a_star * t_i_expanded  # Shape: (n_high, n_high, n_low)
+        
+        # Calculate the mean per block-pair matching `torch.mean((... - ...)**2)`
+        squared_residuals = torch.mean((actual_effects - target_effects) ** 2, dim=-1) # (n_high, n_high)
+
+        # --- 5. Mask out diagonal entries (i == j) and sum up the residual ---
+        diag_mask = 1.0 - torch.eye(n_high, device=T.device)
+        masked_residuals = squared_residuals * diag_mask
+    
+        return masked_residuals.sum()
+    
+    def improved_abstraction_residual(self, T_soft):
+        n_high = T_soft.shape[1]
+        n_low = T_soft.shape[0]
+        I = torch.eye(n_low, device=T_soft.device)
+
+        # 1. Compute s_j for all clusters (loop over n_high, which is small)
+        S_list = []
+        for j in range(n_high):
+            t_j = T_soft[:, j]
+            A_jj = t_j.unsqueeze(1) * self.A_low * t_j.unsqueeze(0)
+            s_j = torch.linalg.solve(I - A_jj, t_j)
+            S_list.append(s_j)
+        S = torch.stack(S_list, dim=1)  # (n_low, n_high)
+
+        # 2. Influence matrix: col j = A_low @ (t_j * s_j)
+        influence_matrix = self.A_low @ (T_soft * S)  # (n_low, n_high)
+
+        # 3. Weighted variance of influence_j over block i, for all (i,j) pairs
+        # weights[r, i] = T_soft[r, i]^2
+        T_sq = T_soft ** 2                                          # (n_low, n_high)
+        t_i_norms = T_sq.sum(dim=0).clamp(min=1e-8)                # (n_high,) effective block sizes
+
+        # Weighted mean: a_star[i,j] = sum_r w[r,i] * influence[r,j] / sum_r w[r,i]
+        a_star = (T_sq.T @ influence_matrix) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
+
+        # diff[i, r, j] = influence[r,j] - a_star[i,j]
+        # (n_high, n_low, n_high) — manageable: 50*500*50 = 1.25M floats
+        diff = influence_matrix.unsqueeze(0) - a_star.unsqueeze(1)
+
+        # Weighted variance: sum_r w[r,i] * diff[i,r,j]^2 / sum_r w[r,i]
+        weights = T_sq.T.unsqueeze(2)                               # (n_high, n_low, 1)
+        residuals = (weights * diff ** 2).sum(dim=1) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
+
+        # Mask diagonal and sum
+        diag_mask = 1.0 - torch.eye(n_high, device=T_soft.device)
+        return (residuals * diag_mask).sum()
+
+    def get_A_high(self, T, S):
+        # T, S: (n_low, n_high)
+        ATS = self.A_low @ (T * S)                        # (n_low, n_high), col j = A_low @ (t_j * s_j)
+        A_high = T.T @ ATS                                # (n_high, n_high), [i,j] = t_i^T @ A_low @ (t_j*s_j)
+        t_norms = T.sum(dim=0).clamp(min=1e-8)            # (n_high,) = ||t_i||^2 for binary T
+        A_high = A_high / t_norms.unsqueeze(1)            # normalise each row by block size
+        return A_high * (1 - torch.eye(self.n_high, device=T.device))
+
+    def forward(self,temp=1.):
+        T, T_soft = self.get_partition(temp)
+        S = self.get_S(T)
+        A_high = self.get_A_high(T,S)
+        
+        abs_loss = self.improved_abstraction_residual(T_soft)
+        surjective_loss = F.relu(0.51 - T_soft.max(dim=0).values).mean()#F.relu(torch.prod(1-T_soft,dim=0) - 0.1).sum()#torch.sum(F.relu(1.0 - T.sum(dim=0)))
+        balance_loss = intra_cluster_penalty(self.A_low,T_soft) #reconstruction_loss(self.A_low, T_soft, A_high) #balance_penalty(T_soft)  #torch.var(torch.sum(T_soft,dim=0))
+        
+        return abs_loss, surjective_loss, balance_loss
+
+    def train_step(self, optimizer, reg_param=1., temp=1.):
         optimizer.zero_grad()
-        abs_loss, surjective_loss = self.forward()
-        total_loss = abs_loss + reg_param * surjective_loss
+        abs_loss, surjective_loss, balance_loss = self.forward(temp)
+        total_loss = balance_loss + reg_param * (surjective_loss + abs_loss)
         total_loss.backward()
         optimizer.step()
-        return abs_loss.item(), surjective_loss.item()
+        return abs_loss.item(), surjective_loss.item(), balance_loss.item()
 
     def train(self, num_epochs, reg_param=1., verbose=True,keep_history=False):
-        optimizer = torch.optim.Adam(self.parameters(), lr=0.01)
-        history = {'abs_loss': [], 'surjective_loss': []}
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        history = {'abs_loss': [], 'surjective_loss': [], 'balance_loss': []} if keep_history else None
         for epoch in range(num_epochs):
-            abs_loss, surjective_loss = self.train_step(optimizer, reg_param)
+            temp = max(0.05, 1.0 * (0.05**(epoch/num_epochs))) 
+            abs_loss, surjective_loss, balance_loss = self.train_step(optimizer, reg_param, temp)
             if epoch % 100 == 0 or epoch == num_epochs - 1:
-                log(f'Epoch {epoch+1}/{num_epochs}, Abs Loss: {abs_loss:.4f}, Surjective Loss: {surjective_loss:.4f} ', verbose=verbose)
+                log(f'Epoch {epoch+1}/{num_epochs}, Abs Loss: {abs_loss:.4f}, Surjective Loss: {surjective_loss:.4f}, Balance Loss: {balance_loss:.4f} ', verbose=verbose)
             if keep_history:
                 history['abs_loss'].append(abs_loss)
                 history['surjective_loss'].append(surjective_loss)
+                history['balance_loss'].append(balance_loss)
         return history
 
-def process_output(S,T,E_high):
-    n_low,n_high = T.shape
-    T_soft = T.detach().cpu().numpy()
-    S = S.detach().cpu().numpy()
-    E_high = E_high.detach().cpu().numpy()
-    A_high = enforce_dag(np.eye(n_high) - np.linalg.inv(E_high))
-
-    indices = np.argmax(T_soft, axis=1)
-    T_pred = np.zeros_like(T_soft)
-    T_pred[np.arange(n_low), indices] = 1 
-   
-    S_pred = T_pred * S
-    return S_pred, T_pred, A_high
-
-if __name__ == "__main__":
-    from utils.plots import plot_matrix, visualize_causal_graph, plot_loss_landscape
-    import matplotlib.pyplot as plt
-    seed = None #44
-    n_high = 2  #number of high-level variables
-    n_low = 10 #number of low-level variables
-    density = 0.4
-
-    A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True)
-    plot_matrix(
-        matrix_list=[A_high_gt,T_gt,S_gt],
-        title_list=['High-Level Adjacency','Endogenous Abstraction T','Exogenous Abstraction S'],
-        fig_title='Ground Truth Matrices'
-    )
-    visualize_causal_graph(A_low, A_high_gt, T_gt, S_gt, title='Ground Truth Causal Abstraction')
-
-    E = torch.linalg.inv(torch.eye(n_low) - torch.from_numpy(A_low).float())
-    #plot_loss_landscape(E, T_gt, idx1=0, idx2=2, flip_prob=0.5)
-    model = HailMary(n_low, n_high, A_low=torch.from_numpy(A_low).float())
-    num_epochs = 1000 * int(np.log10(n_low))
-    history = model.train(num_epochs=num_epochs, reg_param=1,verbose=True, keep_history=True)
-    # --- Post-Training Extraction ---
+def process_output(model):
     model.eval()
     with torch.no_grad():
         # 1. Recover T
@@ -228,15 +312,44 @@ if __name__ == "__main__":
     # Convert to numpy for your evaluation downstream
     T_pred = T.cpu().numpy()
     S_pred = S.cpu().numpy()
-    A_high_pred = A_high.cpu().numpy()
+    A_high_pred = enforce_dag(A_high.cpu().numpy())
+    return S_pred, T_pred, A_high_pred
+
+if __name__ == "__main__":
+    from utils.plots import plot_matrix, visualize_causal_graph, plot_loss_landscape
+    import matplotlib.pyplot as plt
+    import time
+    seed = None #44
+    n_high = 50  #number of high-level variables
+    n_low = 500 #number of low-level variables
+    density = 0.4
+
+    A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True)
+    plot_matrix(
+        matrix_list=[A_high_gt,T_gt,S_gt],
+        title_list=['High-Level Adjacency','Endogenous Abstraction T','Exogenous Abstraction S'],
+        fig_title='Ground Truth Matrices'
+    )
+    visualize_causal_graph(A_low, A_high_gt, T_gt, S_gt, title='Ground Truth Causal Abstraction')
+
+    E = torch.linalg.inv(torch.eye(n_low) - torch.from_numpy(A_low).float())
+    #plot_loss_landscape(E, T_gt, idx1=0, idx2=2, flip_prob=0.5)
+    model = HailMary(n_low, n_high, A_low=torch.from_numpy(A_low).float())
+    num_epochs = 1000 * int(np.log10(n_low)+1)
+    start_time = time.time()
+    history = model.train(num_epochs=1000, reg_param=1e3,verbose=True, keep_history=True)
+    runtime = time.time() - start_time
+    T_probs, _ = model.get_partition()
+    S_pred, T_pred, A_high_pred = process_output(model)
+    
     
     obs_loss = observation_loss(A_low=A_low, A_high=A_high_pred, S=S_pred, T=T_pred)
     intv_loss = intervention_loss(E_low=E.cpu().numpy(), S=S_pred, T=T_pred)
-    print(f"Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}")
+    print(f"Time: {runtime:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Is Surjective?: {T_pred.sum(axis=0).min() > 0}")
 
     visualize_causal_graph(A_low, A_high_pred, T_pred, S_pred, title='Learned Causal Abstraction')
     plot_matrix(
-        matrix_list=[T_pred],
+        matrix_list=[T_probs.cpu().detach().numpy()],
         title_list=['Learned T'],
         fig_title='Learned Matrices'
     )
@@ -251,7 +364,8 @@ if __name__ == "__main__":
     ax[0].set_ylabel("Loss")
 
     ax[1].plot(range(0,len(history['surjective_loss']),10), history['surjective_loss'][::10])
-    ax[1].legend(['Surjective Loss'])
+    ax[1].plot(range(0,len(history['balance_loss']),10), history['balance_loss'][::10])
+    ax[1].legend(['Surjective Loss', 'Balance Loss'])
     ax[1].set_xlabel("Epoch")
     ax[1].set_ylabel("Loss")
     plt.show()
