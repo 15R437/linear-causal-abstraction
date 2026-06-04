@@ -1,4 +1,6 @@
 import numpy as np
+import torch
+import torch.nn as nn
 
 def clusters_to_matrix(clusters,n_low):
     n_high = len({k:v for k,v in clusters.items() if k != -1})
@@ -10,12 +12,12 @@ def clusters_to_matrix(clusters,n_low):
     
     return T
 
-def matrix_to_clusters(T):
-
-    pass
+def log(msg,verbose=True):
+        if verbose:
+            print(msg)
 
 def reconstruct_adj(A_high,T):
-    """
+    """ 
     Numpy based!
     This function takes a high-level adjacency matrix A_high,
     an abstraction matrix T and reconstructs a low-level
@@ -35,7 +37,16 @@ def enforce_dag(A):
     This guarantees an acyclic graph while roughly minimizing reconstruction error.
     """
     n = A.shape[0]
-    A_dag = np.zeros_like(A)
+    is_torch = hasattr(A, "detach")
+    if is_torch:
+        device = A.device
+        dtype = A.dtype
+        A_np = A.detach().cpu().numpy()
+    else:
+        A_np = np.array(A)
+    
+        A_dag = np.zeros_like(A_np)
+    
     
     # Extract all non-zero edges and sort by magnitude descending
     edges = []
@@ -64,5 +75,125 @@ def enforce_dag(A):
     for _, w, i, j in edges:
         if not has_path(A_dag, j, i):
             A_dag[i, j] = w
-            
+
+    if is_torch:
+        return torch.tensor(A_dag, device=device, dtype=dtype)
     return A_dag
+
+class DAGTopologyMask(nn.Module):
+    def __init__(self, n_high):
+        super().__init__()
+        self.n_high = n_high
+        # Learnable, continuous positions for each macro-node
+        self.node_positions = nn.Parameter(torch.linspace(0, n_high, n_high))
+
+    def dag_mask(self,temp=1.):
+        diff = self.node_positions.unsqueeze(0) - self.node_positions.unsqueeze(1)
+        hard_mask = (diff > 0).float()
+        soft_mask = torch.sigmoid(diff/temp)
+        dag_mask = soft_mask + (hard_mask - soft_mask).detach()
+        return dag_mask, soft_mask
+
+def learn_dag(A_low, T, num_epochs=1000, min_temp=0.01, max_temp=1.0, verbose=False, keep_history=False):
+    def improved_abstraction_residual(dag_mask, A_low=A_low, T=T):
+        n_low, n_high = T.shape
+        I = torch.eye(n_low, device=T.device)
+
+        S_list = []
+        for j in range(n_high):
+            t_j = T[:, j]
+            A_jj = t_j.unsqueeze(1) * A_low * t_j.unsqueeze(0)
+            s_j = torch.linalg.solve(I - A_jj, t_j)
+            S_list.append(s_j)
+        S = torch.stack(S_list, dim=1)  # (n_low, n_high)
+
+        influence_matrix = A_low @ (T * S)  # (n_low, n_high)
+
+        T_sq = T ** 2                                          # (n_low, n_high)
+        t_i_norms = T_sq.sum(dim=0).clamp(min=1e-8)                # (n_high,) effective block sizes
+        a_star = dag_mask * (T_sq.T @ influence_matrix) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
+
+        diff = influence_matrix.unsqueeze(0) - a_star.unsqueeze(1)
+        weights = T_sq.T.unsqueeze(2)                               # (n_high, n_low, 1)
+        residuals = (weights * diff ** 2).sum(dim=1) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
+
+        diag_mask = 1.0 - torch.eye(n_high, device=T.device)
+
+        return (residuals * diag_mask).sum()
+    
+    n_low, n_high = T.shape
+    learner = DAGTopologyMask(n_high)
+    optimiser = torch.optim.Adam(learner.parameters(), lr=0.001)
+    history = {'loss':[], 'dag_mask':[], 'soft_mask':[]}
+    for epoch in range(num_epochs):
+        temp = max(min_temp, max_temp * (min_temp**(epoch/num_epochs)))
+        dag_mask, soft_mask = learner.dag_mask(temp)
+        loss = improved_abstraction_residual(dag_mask)
+        loss.backward()
+        optimiser.step()
+        if epoch % (num_epochs//10) == 0 or epoch == num_epochs - 1:
+            log(f"Epoch {epoch+1}/{num_epochs}: Loss = {loss.item()}",verbose=verbose)
+        if keep_history:
+            history['loss'].append(loss.item())
+            history['dag_mask'].append(dag_mask.cpu().detach().numpy())
+            history['soft_mask'].append(soft_mask.cpu().detach().numpy())
+    
+    return learner.dag_mask().cpu().detach().numpy(), history
+
+def is_dag(A):
+    """
+    Returns True if the adjacency matrix A represents a DAG.
+    A should be a square, n x n matrix.
+    """
+    n = A.shape[0]
+    # Calculate in-degree of each node
+    # Summing columns gives the number of incoming edges for each node
+    in_degree = np.sum(A != 0, axis=0)
+    
+    # Queue for nodes with 0 in-degree
+    queue = [i for i in range(n) if in_degree[i] == 0]
+    visited_count = 0
+    
+    while queue:
+        u = queue.pop(0)
+        visited_count += 1
+        
+        # Look at neighbors (outgoing edges from u)
+        for v in range(n):
+            if A[u, v] != 0:
+                in_degree[v] -= 1
+                if in_degree[v] == 0:
+                    queue.append(v)
+                    
+    # If we visited all nodes, there is no cycle
+    return visited_count == n
+
+def get_S(T, A_low):
+    n_low = A_low.shape[0]
+    A_intra = T @ T.T * A_low
+    I_low = np.eye(n_low)
+
+    S = np.linalg.solve(I_low - A_intra, T)
+    return S
+
+def get_A_high(T, A_low, priority='abstraction'):
+    n_low,n_high = T.shape
+    if priority == 'recon':
+        with np.errstate(divide='ignore', invalid='ignore'):
+            T_norm = T / np.sum(T**2, axis=0)
+        
+        T_norm = np.nan_to_num(T_norm)
+        A_high = T_norm.T @ A_low @ T
+
+    elif priority == 'abstraction':
+        S = get_S(T,A_low)
+        ATS = A_low @ (T * S)                        
+
+        A_high = T.T @ ATS                                
+        t_norms = np.sum(T, axis=0)
+        t_norms = np.clip(t_norms, 1e-8, None)
+
+        A_high = A_high / t_norms[:, None]
+        A_high = A_high * (1 - np.eye(n_high))
+    
+    return enforce_dag(A_high)

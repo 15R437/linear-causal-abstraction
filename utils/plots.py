@@ -11,6 +11,8 @@ import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
 from matplotlib.ticker import MultipleLocator,ScalarFormatter,MaxNLocator
+import matplotlib.animation as animation
+from IPython.display import HTML
 import matplotlib.cm as cm
 from itertools import combinations
 
@@ -212,22 +214,28 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title=
 def plot_matrix(matrix_list,title_list,fig_title=''):
     assert(len(matrix_list)==len(title_list)), f"Expected matrix_list and title_list to have the same length. Got lists of length {len(matrix_list)} and {len(title_list)}."
     n = len(matrix_list)
-    fig, ax = plt.subplots(1,n, figsize=(5*n,5),layout='constrained')
-    if len(matrix_list) == 1:
+    if n == 1:
+        width, height = 6.5, 8
+    else:
+        width = min(6 * n + 0.5, 15)
+        height = 8
+    
+    fig, ax = plt.subplots(1, n, figsize=(width, height), layout="tight")
+    if n == 1:
          ax = [ax]
     
 
     global_max = np.max([np.max(np.abs(E)) for E in matrix_list if E is not None])
-    for idx,(E,title) in enumerate(zip(matrix_list,title_list)):
-        im = ax[idx].imshow(E,cmap='bwr',vmin=-global_max,vmax=global_max)
+    for idx,(E,title) in enumerate(zip(matrix_list,title_list)):  
+        im = ax[idx].imshow(E,cmap='bwr',vmin=-global_max,vmax=global_max,aspect='auto')
         ax[idx].set_title(title)
 
-        fig.colorbar(im,ax=ax[idx],fraction=0.046,pad=0.04,shrink=0.8)
+        fig.colorbar(im, ax=ax[idx], fraction=0.046, pad=0.04)
     
     fig.suptitle(fig_title,fontsize=16,fontweight='bold')
     plt.show()
 
-def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None):
+def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None,ylog=False,xlog=False):
     # 1. Filter data
     df = results_df.copy()
     if approaches:
@@ -241,25 +249,30 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     #a grid of plots
     sns.set_theme(style="whitegrid")
     grid = sns.FacetGrid(df, row=row, col=col, hue='Approach', 
-                    height=8, aspect=1.5, palette='Set2', sharey=False)
+                    height=5, aspect=1.3, palette='Set2', sharey=False, sharex=False)
 
-    grid.map_dataframe(sns.lineplot, x=x_axis, y=y_axis, marker='o', errorbar='se')
-
-    if x_axis=='sample_size':
+    grid.map_dataframe(sns.lineplot, x=x_axis, y=y_axis, marker='o', estimator=np.median, errorbar=('pi', 95))
+    if ylog:
         for ax in grid.axes.flat:
-            ax.set_xscale('log', base=2)
+            ax.set_yscale('log')
+
+    if xlog:
+        for ax in grid.axes.flat:
+            ax.set_xscale('log')
     elif x_axis=='k':
         for ax in grid.axes.flat:
             ax.xaxis.set_major_locator(MaxNLocator(nbins=10,integer=True))
-    grid.set_axis_labels(x_axis, f"Average {y_axis}")
+    grid.set_axis_labels(x_axis, y_axis)
+    grid.figure.subplots_adjust(left=0.1, right=1-0.05, top=1-0.1)
     grid.add_legend(title="Approach")
     row_tmpl = row + " = {row_name} " if row else ""
     col_tmpl = col + " = {col_name} " if col else ""
     grid.set_titles(row_template=row_tmpl, col_template=col_tmpl)
     
-    title_str = f"Average {y_axis}"
+    title_str = f""
     if row or col:
-        title_str += f" grouped by {row if row else ''} {col if col else ''}"
+        #title_str += f" grouped by {row if row else ''} {col if col else ''}"
+        pass
     grid.figure.suptitle(title_str, y=0.98)
 
     plt.show()
@@ -290,19 +303,26 @@ def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.
         W = (1 - W) * flip_mask + W * (1 - flip_mask)
 
         t1_values = np.linspace(0,1,n_points)
-        model = HailMary(n_low=n_low, n_high=n_high, E=A_low, T_type='binary')
+        model = HailMary(n_low=n_low, n_high=n_high, A_low=A_low)
         if idx2 is None:
             losses = []
             for t1 in t1_values:
                 W[idx1,0] = t1
                 W[idx1,1] = 1-t1
-                recon_loss, obs_loss, intv_loss, _, _, _, _ = model(W=torch.from_numpy(W).float())
-                losses.append((recon_loss.item(), obs_loss.item(), intv_loss.item()))
+                try:
+                    balance_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss = model(T=torch.from_numpy(W).float())
+                    losses.append((balance_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), surjective_loss.item(), entropy_loss.item()))
+                except torch._C._LinAlgError:
+                    print(f"Failed to run for t ={t1}.")
+                    losses.append((float('nan'), float('nan'), float('nan'), float('nan'), float('nan'), float('nan')))
 
-            recon_losses, obs_losses, intv_losses = zip(*losses)
-            plt.plot(t1_values, recon_losses, label='Reconstruction Loss')
-            plt.plot(t1_values, obs_losses, label='Observation Loss')
-            plt.plot(t1_values, intv_losses, label='Intervention Loss')
+            balance_losses, abs_losses, graph_losses, topo_losses, surjective_losses,entropy_losses = zip(*losses)
+            plt.plot(t1_values, balance_losses, label='Balance Loss')
+            plt.plot(t1_values, abs_losses, label='Abstraction Loss')
+            plt.plot(t1_values, graph_losses, label='Balance Loss')
+            plt.plot(t1_values, topo_losses, label='Balance Loss')
+            plt.plot(t1_values, surjective_losses, label='Surjective Loss')
+            plt.plot(t1_values, entropy_losses, label='Entropy Loss')
             plt.xlabel(f'T_value for low-level variable {idx1}')
             plt.ylabel('Loss')
             plt.title('Loss Landscape')
@@ -318,12 +338,16 @@ def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.
                 for t2 in t2_values:
                     W[idx2,0] = t2
                     W[idx2,1] = 1-t2
-                    recon_loss, obs_loss, intv_loss, _, _, _, _ = model(W=torch.from_numpy(W).float())
-                    row_losses.append((recon_loss.item(), obs_loss.item(), intv_loss.item()))
+                    try:
+                        balance_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss = model(T=torch.from_numpy(W).float())
+                        row_losses.append((balance_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), surjective_loss.item(), entropy_loss.item()))
+                    except torch._C._LinAlgError:
+                        print(f"Failed to run for t1 ={t1}, t2={t2}.")
+                        row_losses.append((float('nan'), float('nan'), float('nan'), float('nan'), float('nan'), float('nan')))
                 losses.append(row_losses)
             
-            fig, ax = plt.subplots(1,3,figsize=(10,8))
-            for i, loss_name in enumerate(['Reconstruction Loss','Observation Loss','Intervention Loss']):
+            fig, ax = plt.subplots(1,6,figsize=(10,8))
+            for i, loss_name in enumerate(['Balance Loss','Abstraction Loss','Graph Loss', 'Topo Loss','Surjective Loss','Entropy Loss']):
                 specific_loss = np.array([[loss[i] for loss in row] for row in losses])
                 im1 = ax[i].imshow(specific_loss, cmap='Blues', origin='lower')
                 ax[i].set_title(loss_name)
@@ -338,3 +362,111 @@ def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.
                 #ax[i].legend()
             
             plt.show()
+
+def plot_assignment_raster(history, subsample=10, T_gt=None,soft=True):
+    T_list = history['T'][::subsample]  # (n_epochs, n_low, n_high)
+    n_epochs = len(T_list)
+    n_low, n_high = T_list[0].shape
+    
+    # Hard assignment at each epoch: (n_epochs, n_low)
+    assignments = np.stack([T.argmax(axis=1) for T in T_list], axis=0)
+    soft_assignments = np.stack(T_list, axis=0)
+    cluster_0_probs = soft_assignments[:, :, 0]
+
+    
+    # If ground truth given, find best cluster permutation via Hungarian matching
+    # at the final epoch and apply consistently
+    if T_gt is not None:
+        from scipy.optimize import linear_sum_assignment
+        final_assign = assignments[-1]
+        gt_assign = T_gt.argmax(axis=1)
+        # Cost matrix: how many variables match between predicted cluster i and gt cluster j
+        cost = np.zeros((n_high, n_high))
+        for i in range(n_high):
+            for j in range(n_high):
+                cost[i, j] = -np.sum((final_assign == i) & (gt_assign == j))
+        _, col_ind = linear_sum_assignment(cost)
+        # Remap all assignments
+        remap = {i: col_ind[i] for i in range(n_high)}
+        assignments = np.vectorize(remap.get)(assignments)
+    
+    fig, axes = plt.subplots(1, 2 if T_gt is not None else 1, 
+                              figsize=(14, 5), sharey=False)
+    ax = axes[0] if T_gt is not None else axes
+
+    if soft:
+        # Now plot this heatmap
+        im = ax.imshow(cluster_0_probs.T, aspect='auto', 
+                    cmap='Blues', vmin=0, vmax=1, 
+                    interpolation='nearest')
+        ax.set_title('Soft Assignment Probability: Cluster 0')
+        plt.colorbar(im, ax=ax, label='Probability (0 to 1)')
+    else:
+        im = ax.imshow(assignments.T, aspect='auto', 
+                    cmap='tab20', interpolation='nearest',
+                    vmin=0, vmax=n_high-1)
+        ax.set_xlabel('Epoch (subsampled)')
+        ax.set_ylabel('Variable index')
+        ax.set_title('Predicted cluster assignment over training')
+        ax.set_xticks(np.linspace(0, n_epochs-1, 6).astype(int))
+        ax.set_xticklabels((np.linspace(0, len(history['T'])-1, 6) * subsample).astype(int))
+        ax.set_yticks(np.arange(n_high)) # This forces the axis to only show ticks for your cluster count
+        #ax.set_yticklabels([f'Node {i}' for i in range(n_high)])
+        plt.colorbar(im, ax=ax, label='Cluster')
+    
+    if T_gt is not None:
+        # Ground truth column
+        gt_col = T_gt.argmax(axis=1)[:, None] * np.ones((1, n_epochs))
+        axes[1].imshow(gt_col.T, aspect='auto', cmap='tab20', 
+                       interpolation='nearest', vmin=0, vmax=n_high-1)
+        axes[1].set_title('Ground truth assignment')
+        axes[1].set_xlabel('(reference)')
+    
+    plt.tight_layout()
+    return fig
+
+
+def animate_matrices(matrix_list:list[np.ndarray], xlabel:str = '', ylabel:str = '', title: str = '', subsample=10, fps=15, save_dir='results/timelapse/',cmap='Blues'):
+    """
+    Creates a time-lapse animation of matrix values.
+    
+    Args:
+        matrix_list: List of 2D matrices to display
+        subsample: How many epochs to skip between frames to speed up the video
+        fps: Frames per second for the playback
+    """
+    matrix_list = matrix_list[::subsample]
+    n_frames = len(matrix_list)
+    n_rows, n_cols = matrix_list[0].shape
+    
+    fig, ax = plt.subplots(figsize=(6, 8))
+    
+    cax = ax.imshow(matrix_list[0], aspect='auto', cmap=cmap, 
+                    vmin=0, vmax=1, interpolation='nearest')
+    
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    title_object = ax.set_title(title + ' - Epoch: 1')
+    fig.colorbar(cax, ax=ax, label='Value')
+    
+    ax.set_xticks(np.arange(n_cols))
+    #ax.set_xticklabels([f'Cluster {i}' for i in range(n_high)])
+    
+    # The update function called for each frame
+    def update(frame):
+        # Update the data in the heatmap
+        cax.set_array(matrix_list[frame])
+        # Update the title with the correct epoch number
+        title_object.set_text(title + f" - Epoch: {frame * subsample + 1}")
+        return cax, title_object
+
+    # Build the animation
+    ani = animation.FuncAnimation(fig, update, frames=n_frames, 
+                                  interval=1000/fps, blit=False)
+    
+    # Close the static figure so it doesn't print twice in Jupyter
+    plt.close(fig)
+    filename = save_dir +  f'{title}.gif'
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+    ani.save(filename, writer='pillow', fps=15)
+    

@@ -1,6 +1,125 @@
 import numpy as np
 from scipy.stats import gennorm
 from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_linear_concretization
+from utils.helper import get_S, get_A_high
+import numpy as np
+
+def generate_generalized_benchmark(n_low=90, n_high=3, blockiness=1.0, shuffle=True, seed=None, **kwds):
+    """
+    Generates an n-dimensional, singularity-free layered graph 
+    designed to form a perfectly convex optimization basin for hail_mary.
+    
+    Params:
+        n_low (int): Total low-level nodes (must be divisible by n_high).
+        n_high (int): Number of high-level clusters/blocks.
+        blockiness (float): 1.0 for a perfect, local-minima-free cascade.
+                            Lower values introduce structural noise.
+    """
+    assert n_low % n_high == 0, f"n_low ({n_low}) must be perfectly divisible by n_high ({n_high})."
+    nodes_per_block = n_low // n_high
+    rng = np.random.default_rng(seed)
+
+    # 1. Construct Ground Truth T Matrix
+    T_gt = np.zeros((n_low, n_high))
+    for b in range(n_high):
+        start_idx = b * nodes_per_block
+        end_idx = start_idx + nodes_per_block
+        T_gt[start_idx:end_idx, b] = 1.0
+
+    # 2. Build the Ideal Cascade Matrix
+    A_ideal = np.zeros((n_low, n_low))
+    for b in range(n_high - 1):
+        # Source block boundaries
+        src_start = b * nodes_per_block
+        src_end = src_start + nodes_per_block
+        
+        # Immediate downstream target block boundaries
+        tgt_start = (b + 1) * nodes_per_block
+        tgt_end = tgt_start + nodes_per_block
+        
+        # Fully connect every node in block b to every node in block b+1
+        A_ideal[src_start:src_end, tgt_start:tgt_end] = 1.0
+
+    # 3. Create Background Noise Matrix (density = 0.1)
+    A_noise = np.random.binomial(1, p=0.1, size=(n_low, n_low))
+    np.fill_diagonal(A_noise, 0)
+    
+    # 4. Blend Ideal Structure with Noise using the Knob
+    mask = np.random.rand(n_low, n_low) < blockiness
+    A_low = np.where(mask, A_ideal, A_noise)
+    
+    # At perfect blockiness, wipe out all intra-block and backward edges to guarantee 0 loss
+    if blockiness == 1.0:
+        A_low = A_ideal
+        """
+        for b in range(n_high):
+            start = b * nodes_per_block
+            end = start + nodes_per_block
+            # Wipe out internal block connections
+            A_low[start:end, start:end] = 0
+            # Wipe out backward connections to previous blocks
+            if start > 0:
+                A_low[start:end, :start] = 0
+        """
+    if shuffle:
+        perm = rng.permutation(n_low)
+        A_low = A_low[perm][:,perm]
+        T_gt = T_gt[perm][:,:]
+
+    return A_low, T_gt
+
+
+
+def generate_easy_benchmark(n_low=60, blockiness=1.0, cluster_balance=0.5, shuffle=True, seed=None):
+    """
+    Generates a low-dimensional, singularity-free graph engineered 
+    to have a convex loss landscape for the hail_mary algorithm.
+    
+    Params:
+        n_low (int): Total low-level nodes (must be even for equal clusters).
+        blockiness (float): Value from 0.0 to 1.0. 
+                            1.0 = Perfect block structure (all nodes in C0 connected to all nodes in C1).
+                            0.0 = Each node in C0 connected to just one node in C1
+    """
+    rng = np.random.default_rng(seed)
+    cluster_0_size = max(min(int(n_low * cluster_balance),n_low-1),1)
+    cluster_1_size = n_low - cluster_0_size
+    
+    # 1. Construct Ground Truth T (Hard Assignments)
+    T_gt = np.zeros((n_low, 2))
+    T_gt[:cluster_0_size, 0] = 1.0 
+    T_gt[cluster_0_size:, 1] = 1.0  
+
+    A_low = np.zeros((n_low,n_low))
+
+    # ensure at least one connection from each node in C0 to satisfy the abstraction residual requirement
+    targets = rng.integers(cluster_0_size, n_low, size=cluster_0_size)
+    A_low[np.arange(cluster_0_size), targets] = 1.0
+    
+    if blockiness > 0:
+        random_mask = rng.random((cluster_0_size, cluster_1_size)) < blockiness
+        A_low[:cluster_0_size, cluster_0_size:] = np.maximum(
+            A_low[:cluster_0_size, cluster_0_size:], 
+            random_mask.astype(float)
+        )
+    
+    #make sure rows of A_low have identical sums (since T_gt is binary)
+    row_sum = A_low[:cluster_0_size,:].sum(axis=1)
+    target_sum = row_sum.max()
+    A_low[:cluster_0_size,:] = (target_sum[None,None] / row_sum[:,None] ) * A_low[:cluster_0_size,:]
+
+    if shuffle:
+        perm = rng.permutation(n_low)
+        A_low = A_low[perm][:,perm]
+        T_gt = T_gt[perm][:,:]
+
+        T_gt = T_gt[:][:,rng.permutation(2)]
+    
+    S_gt = get_S(T=T_gt, A_low=A_low)
+    A_high_gt = get_A_high(T=T_gt, A_low=A_low)
+    return A_low, T_gt, S_gt, A_high_gt
+    
+
 
 def random_dag(num_nodes,edge_density,weight_mean=0,weight_std=1,seed=None):
     """
@@ -114,14 +233,19 @@ def T_concretisation_sampling(A_high,T,edge_density=0.3,seed=None,max_abs_weight
     
     return A_low
 
-def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),marg_prob=0,seed=None,max_attempts=10,shuffle=False,internal=False):
+def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg_prob=0,seed=None,max_attempts=10,shuffle=False,internal=False, **kwds):
     rng = np.random.default_rng(seed)
     for _ in range(max_attempts):
-        adj_structure = (random_dag(n_high,density, seed=seed) != 0).astype(float)
-        weights = rng.normal(0, 1, size=adj_structure.shape)
-        A_high_gt = adj_structure * weights
+        attempt_seed = int(rng.integers(0, 2**32 - 1)) if seed is not None else None
+
+        # Samples weights strictly between 0.3 and 0.8 (and randomly flips the sign)
+        adj_structure = (random_dag(n_high,density, seed=attempt_seed) != 0).astype(float)
+        signs = rng.choice([-1, 1], size=adj_structure.shape)
+        absolute_weights = rng.uniform(0.3, 0.8, size=adj_structure.shape)
+        A_high_gt = adj_structure * absolute_weights * signs
+        
         try:
-            T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=seed)
+            T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=attempt_seed)
             A_low, S_gt = sample_linear_concretization(A_high_gt,T_gt,block_size,internal=internal,alpha=1.,style='uniform')
             assert np.any(A_low != 0) #ensure we don't return a trivial graph with no edges
             if shuffle:

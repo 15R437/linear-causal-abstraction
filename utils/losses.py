@@ -22,18 +22,20 @@ loss_fn should take as input:
 def reconstruction_loss(A_low,A_hat,**kwds):
     return np.mean((A_low - A_hat)**2)
 
-def reconstruction_loss_with_data(A_hat,X, **kwds):
+def reconstruction_loss_with_data(A_hat,X, A_low,**kwds):
     """
     Params
         A_hat (np.ndarray): (n_low x n_low) adjacency matrix assumed to be upper-triangular under topological ordering
         X (np.ndarray): (n_samples x n_low) data matrix
+        A_low (np.ndarray): (n_low x n_low) true adjacency matrix
     """
-    if A_hat is None:
-        return np.nan
-    else:
-        residual = (np.eye(A_hat.shape[0])-A_hat.T)@X.T #pxN matrix
-    RMSE = np.sqrt(np.mean(residual**2))
-    return RMSE
+    
+    I = np.eye(A_hat.shape[0])
+    residual = (I-A_hat.T)@X.T #pxN matrix
+    residual_oracle = (I-A_low.T)@X.T
+    rmse = np.sqrt(np.mean(residual**2))
+    rmse_oracle = np.sqrt(np.mean(residual_oracle**2))
+    return rmse -  rmse_oracle
 
 def kl_loss(A_high,A_low,T,**kwds):
     """
@@ -80,9 +82,50 @@ def intervention_loss(E_low,S,T,**kwds):
 
     lhs = F_pi @ S[None,...]
     rhs = term @ F_pi @ T[None,...]
-    intv_loss = np.sum(np.mean((lhs - rhs)**2,axis=(-2,-1)))
+    intv_loss = np.mean(np.mean((lhs - rhs)**2,axis=(-2,-1)))
 
     return intv_loss
+
+def abstraction_residual(A_low, T, A_high, **kwds):
+        n_low,n_high = T.shape
+        I = np.eye(n_low)
+
+        S_list = []
+        for j in range(n_high):
+            t_j = T[:, j]
+            A_jj = t_j[:, None] * A_low * t_j[None, :]
+            s_j = np.linalg.solve(I - A_jj, t_j)
+            S_list.append(s_j)
+        S = np.stack(S_list, axis=1)  # (n_low, n_high)
+
+        influence_matrix = A_low @ (T * S)  # (n_low, n_high)
+
+        T_sq = T ** 2                                          # (n_low, n_high)
+        t_i_norms = np.clip(T_sq.sum(axis=0), a_min=1e-8, a_max=None)                # (n_high,) effective block sizes
+
+        # Weighted mean: a_star[i,j] = sum_r w[r,i] * influence[r,j] / sum_r w[r,i]
+        #a_star = (T_sq.T @ influence_matrix) / t_i_norms[:,None]  # (n_high, n_high)
+        diff = influence_matrix[None, :, :] - A_high[:, None, :]
+
+        weights = T_sq.T[:, :, None]                               # (n_high, n_low, 1)
+        residuals = (weights * diff ** 2).sum(axis=1) / t_i_norms[:,None]  # (n_high, n_high)
+        diag_mask = 1.0 - np.eye(n_high)
+        return (residuals * diag_mask).sum()
+
+def graph_loss(A_low,T):
+    n_low,n_high = T.shape
+    A_low_binary = (A_low != 0).astype(float)
+    H = A_low_binary @ T # H[i,j] is the number of nodes in cluster j that node i has an edge to
+    C = np.tanh(10*H) # C[i,j] = 0 iff node i is not connected to cluster j otherwise C[i,j] \approx 1
+
+    numerator = T.T @ C 
+    denominator = np.clip(T.sum(axis=0, keepdims=True).T, a_min=1e-8, a_max=None)
+    P = numerator / denominator  
+
+    mask = 1.0 - np.eye(n_high)
+    graph_loss = (P * (1.0 - P) * mask).sum()
+    
+    return graph_loss
 
 def abstraction_loss(E_low,A_low,A_high,S,T,**kwds):
     obs_loss = observation_loss(A_low=A_low, A_high=A_high, S=S, T=T)
