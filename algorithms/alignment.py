@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.getcwd()))
 from utils.generate_data import sample_low_level_graph
 from utils.plots import visualize_causal_graph
 from utils.losses import reconstruction_loss, abstraction_loss, heuristic_cost
-from utils.helper import enforce_dag, learn_dag, get_S, get_A_high, get_A_hat
+from utils.helper import enforce_dag, learn_dag, get_S, get_A_high, reconstruct_adj
 
 def get_T(assignment_array, **kwds):
     n_low = len(assignment_array)
@@ -75,7 +75,7 @@ def abstraction_residual(A_low, clusters_list, c1, c2, assignment_array):
         return (residuals * diag_mask).sum()
 
 
-def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heuristic_loss],dag_learner='khan'):
+def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heuristic_loss],dag_learner='khan',compute_all_levels=False):
     n_low = A_low.shape[0]
     E_low = np.linalg.inv(np.eye(len(A_low)) - A_low)
     clusters_list = [[i] for i in range(n_low)]
@@ -107,16 +107,15 @@ def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heur
     A_high_dict = {}
     k = n_low
     while k >= n_high and heap:
-        T = get_T(assignment_array)
-        A_high = get_A_high(A_low=A_low, T=T)
-        A_high_dag = enforce_dag(A_high) if dag_learner == 'khan' else learn_dag(A_low, T)[0]
-        S = get_S(A_low=A_low, T=T)
-        S_dict[k] = S
-        T_dict[k] = T
-        A_high_dict[k] = A_high_dag
+        if compute_all_levels or k == n_high:
+            T = get_T(assignment_array)
+            A_high = get_A_high(A_low=A_low, T=T)
+            A_high_dag = enforce_dag(A_high) if dag_learner == 'khan' else learn_dag(A_low, T)[0]
+            S = get_S(A_low=A_low, T=T)
+            S_dict[k] = S
+            T_dict[k] = T
+            A_high_dict[k] = A_high_dag
 
-        if k == n_high:
-            break
         *losses, i, j, v_i, v_j = heapq.heappop(heap)
         if i not in active_clusters or j not in active_clusters:
             continue
@@ -149,12 +148,12 @@ if __name__ == "__main__":
 
     #assignment,A_high = find_valid_alignment(A_low,n_high, init_clusters, seed=seed)
     start_time = time.time()
-    S_dict, T_dict, A_high_dict = hierarchical_clustering(A_low,loss_list=[heuristic_loss],dag_learner='khan')
+    S_dict, T_dict, A_high_dict = hierarchical_clustering(A_low,loss_list=[heuristic_loss],dag_learner='learner',compute_all_levels=True)
     runtime = time.time() - start_time
     S_pred = S_dict[n_high]
     T_pred = T_dict[n_high]
     A_high = A_high_dict[n_high]
-    A_hat = get_A_hat(A_high,T_pred)
+    A_hat = reconstruct_adj(A_high,T_pred)
 
     print(f"Runtime: \n{runtime:.4f}s")
     print(f"Reconstruction Loss: \n {reconstruction_loss(A_low,A_hat):4f}")

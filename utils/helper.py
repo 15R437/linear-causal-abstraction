@@ -1,4 +1,5 @@
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 
@@ -95,6 +96,11 @@ class DAGTopologyMask(nn.Module):
         return dag_mask, soft_mask
 
 def learn_dag(A_low, T, num_epochs=1000, min_temp=0.01, max_temp=1.0, verbose=False, keep_history=False):
+    if isinstance(A_low, np.ndarray):
+        A_low = torch.from_numpy(A_low).float()
+    if isinstance(T, np.ndarray):
+        T = torch.from_numpy(T).float()
+
     def improved_abstraction_residual(dag_mask, A_low=A_low, T=T):
         n_low, n_high = T.shape
         I = torch.eye(n_low, device=T.device)
@@ -138,7 +144,7 @@ def learn_dag(A_low, T, num_epochs=1000, min_temp=0.01, max_temp=1.0, verbose=Fa
             history['dag_mask'].append(dag_mask.cpu().detach().numpy())
             history['soft_mask'].append(soft_mask.cpu().detach().numpy())
     
-    return learner.dag_mask().cpu().detach().numpy(), history
+    return learner.dag_mask()[0].cpu().detach().numpy(), history
 
 def is_dag(A):
     """
@@ -196,4 +202,39 @@ def get_A_high(T, A_low, priority='abstraction'):
         A_high = A_high / t_norms[:, None]
         A_high = A_high * (1 - np.eye(n_high))
     
-    return enforce_dag(A_high)
+    return A_high
+
+
+
+def regularised_surjective_init(n_low, n_high, noise_std=0.1):
+    if n_low < n_high:
+        raise ValueError(
+            f"Surjectivity impossible: n_low ({n_low}) must be >= n_high ({n_high}) "
+            f"to allow each column to have a softmax value > 0.5."
+        )
+        
+    # 1. Start with a baseline of low-variance random noise
+    logits = np.random.randn(n_low, n_high) * noise_std
+
+    # 2. Build the guaranteed target map
+    targets = np.zeros(n_low, dtype=int)
+    targets[:n_high] = np.arange(n_high)
+    
+    # Fill any remaining rows with random column assignments
+    if n_low > n_high:
+        targets[n_high:] = np.random.randint(0, n_high, size=(n_low - n_high,))
+    
+    # Shuffle row assignments so guaranteed coverage isn't locked to the top rows
+    # np.random.permutation returns a shuffled copy of the target array
+    targets = np.random.permutation(targets)
+    
+    # 3. Calculate the exact structural margin needed
+    min_margin = math.log(max(1, n_high - 1)) 
+    
+    # Add a 5-sigma buffer to ensure noise doesn't pull the softmax below 0.5
+    margin = min_margin + (5 * noise_std) + 0.1
+    
+    # 4. Inject the margin into the targeted positions using advanced integer indexing
+    logits[np.arange(n_low), targets] += margin
+    
+    return logits

@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
+from typing import Literal, Callable
 import matplotlib.pyplot as plt
 import torch
 from algorithms.hail_mary import HailMary
@@ -15,6 +16,7 @@ import matplotlib.animation as animation
 from IPython.display import HTML
 import matplotlib.cm as cm
 from itertools import combinations
+from utils.helper import get_S, get_A_high, regularised_surjective_init
 
 def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title='Causal Abstraction Graph'):
     """
@@ -245,6 +247,8 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
         if c in df.columns:               
             df = df[df[c] == val]
     
+    if ylog:
+        df[y_axis] += 1e-8
     
     #a grid of plots
     sns.set_theme(style="whitegrid")
@@ -277,11 +281,44 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
 
     plt.show()
 
-def violin_plot(results_df,y_axis,fixed_vars={},row=None,col=None):
-    for c, val in fixed_vars.items():
-        if c in df.columns:               
-            df = df[df[c] == val]
+def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,initial_T : Literal['uniform', 'compact','surjective'] = 'uniform'):
+    n_plots = len(LOSSES)
+    fig, ax = plt.subplots(1,n_plots,figsize=(10,6))
+    E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
+    n_low, n_high = T_gt.shape
 
+    if initial_T == 'uniform':
+        T_init = np.ones_like(T_gt) / n_high
+    elif initial_T == 'compact':
+        T_init = np.zeros_like(T_gt)
+        T_init[np.arange(n_low), np.argmax(T_gt, axis=1)] = 1
+    elif initial_T == 'surjective':
+        from scipy.special import softmax
+        logits = regularised_surjective_init(n_low, n_high)
+        T_init = softmax(logits, axis=-1)
+    else:
+        raise ValueError(f"Invalid initial_T value: {initial_T}. Expected 'uniform', 'compact', or 'surjective'.")
+
+    t = np.linspace(0,1,n_steps)
+    T_list = [t_i * T_gt + (1-t_i) * T_init for t_i in t]
+    for i, loss_name in enumerate(LOSSES.keys()):
+        loss_fn = LOSSES[loss_name]
+        loss_values = []
+        for T in T_list:
+            S = get_S(T=T, A_low=A_low)
+            A_high = get_A_high(T=T, A_low=A_low)
+            E_high = np.linalg.inv(np.eye(n_high) - A_high)
+            try:
+                loss_values.append(loss_fn(A_low=A_low, E_low=E_low, T=T, S=S, A_high=A_high, E_high=E_high))
+            except np.linalg.LinAlgError:
+                loss_values.append(float('nan'))
+        ax[i].plot(t, loss_values, label=loss_name)
+        ax[i].set_xlabel('t')
+        #ax[i].set_yscale('log')
+        ax[i].legend()
+    fig.suptitle(f'Loss along linear path from {initial_T} initialisation to Ground Truth')
+    fig.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=n_plots)
+    plt.show()
 
 def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
         """

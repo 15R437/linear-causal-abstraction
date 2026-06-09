@@ -19,7 +19,7 @@ METHODS = {'hail_mary':hail_mary, 'hc_fast':hc_fast, 'hc_abs':hc_abs}
 
 def run_abstraction_with_adjacency(n_high, n_low, density, marg_prob=0., n_test_samples=1000,
                                    gennorm_param=1.2, seed=None, trial=0, prior_info=0,
-                                   METHODS= METHODS, LOSSES= LOSSES):
+                                   METHODS= METHODS, LOSSES= LOSSES, anomalous_threshold=[('intv_loss',1.)]):
     results = []
     
     A_low,T_gt,S_gt,A_high_gt = sample_low_level_graph(n_high=n_high,n_low=n_low,density=density,seed=seed,shuffle=True,internal=False,marg_prob=marg_prob)
@@ -44,10 +44,11 @@ def run_abstraction_with_adjacency(n_high, n_low, density, marg_prob=0., n_test_
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
         A_low_recon = reconstruct_adj(A_high_pred,T_pred)
+        E_high_pred = np.linalg.inv(np.eye(n_high) - A_high_pred)
         result = { "Approach":method_name,
                     "n_high":n_high,
                     "n_low":n_low,
-                    "ratio":int(n_low/n_high),
+                    "ratio":n_low/n_high,
                     "density":density,
                     "marg_prob":marg_prob,
                     "gennorm_param":gennorm_param,
@@ -55,32 +56,34 @@ def run_abstraction_with_adjacency(n_high, n_low, density, marg_prob=0., n_test_
                     "runtime": runtime,
                     "memory": peak/1e6
                     }
-        result = result | {loss_name:loss_fn(A_high=A_high_pred, A_low=A_low, E_low=E_low, A_hat=A_low_recon, S=S_pred, T=T_pred, X=X_test) 
+        result = result | {loss_name:loss_fn(A_high=A_high_pred, A_low=A_low, E_low=E_low, E_high=E_high_pred, A_hat=A_low_recon, S=S_pred, T=T_pred, X=X_test) 
                                for loss_name,loss_fn in LOSSES.items()}
         results.append(result)
         
-        if result['intv_loss'] > 1 or result['obs_loss'] > 1:
-            log_dir = "results/anomalous_graphs"
-            os.makedirs(log_dir, exist_ok=True)
-            filename = f"{log_dir}/{method_name}_{n_high}_{n_low}.npz"
-            
-            # 2. Save both matrices and metadata into one compressed file
-            np.savez_compressed(
-                filename,
-                A_low=A_low,
-                T_gt=T_gt,
-                S_gt=S_gt,
-                A_high_gt=A_high_gt,
-                n_high=n_high,
-                method_name=method_name,
-                recon_loss_data=result['recon_loss_data'],
-                obs_loss = result['obs_loss'],
-                intv_loss = result['intv_loss']
-            )
+        for loss_name, thresh in anomalous_threshold:
+            if result[loss_name] > thresh:
+                log_dir = "results/anomalous_graphs"
+                os.makedirs(log_dir, exist_ok=True)
+                filename = f"{log_dir}/{method_name}_{n_high}_{n_low}.npz"
+                
+                # 2. Save both matrices and metadata into one compressed file
+                np.savez_compressed(
+                    filename,
+                    A_low=A_low,
+                    T_gt=T_gt,
+                    S_gt=S_gt,
+                    A_high_gt=A_high_gt,
+                    n_high=n_high,
+                    method_name=method_name,
+                    recon_loss_data=result['recon_loss_data'],
+                    obs_loss = result['obs_loss'],
+                    intv_loss = result['intv_loss']
+                )
+            break
 
     return results
 
-def plot_adjacency_results(cut_off = "20260529-120000", col_var=None, row_var=None):
+def plot_adjacency_results(cut_off = "20260529-120000", x_axis='n_high', row_var=None, col_var=None):
     results_dir = Path("results/adjacency")
     csv_files = [f for f in results_dir.glob("*.csv") if f.stem >= cut_off]
 
@@ -93,11 +96,11 @@ def plot_adjacency_results(cut_off = "20260529-120000", col_var=None, row_var=No
         results_df = pd.concat(df_list, ignore_index=True)
         print(f"Collated {len(df_list)} file(s) saved after {cut_off}. Total rows: {len(results_df)}")
     
-        plot_results(results_df=results_df, x_axis='n_low', y_axis='runtime', row=row_var, col=col_var)
-        plot_results(results_df=results_df, x_axis='n_low', y_axis='memory', row=row_var, col=col_var)
-        plot_results(results_df=results_df, x_axis='n_low', y_axis='abstraction_residual', row=row_var, col=col_var)
-        plot_results(results_df=results_df, x_axis='n_low', y_axis='obs_loss', row=row_var, col=col_var)
-        plot_results(results_df=results_df, x_axis='n_low', y_axis='intv_loss', row=row_var, col=col_var)
+        plot_results(results_df=results_df, x_axis=x_axis, y_axis='runtime', row=row_var, col=col_var)
+        plot_results(results_df=results_df, x_axis=x_axis, y_axis='memory', row=row_var, col=col_var)
+        plot_results(results_df=results_df, x_axis=x_axis, y_axis='recon_loss_data', row=row_var, col=col_var)
+        plot_results(results_df=results_df, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True)
+        plot_results(results_df=results_df, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var, ylog=True)
         
     else:
         print("No CSV files found in the directory.")
@@ -110,14 +113,16 @@ if __name__ == "__main__":
 
     seed = None
     density_list = [0.4]
-    num_trials = 3
+    num_trials = 10
 
     # regime = (n_low, n_high_list, method_name_list)
-    regimes = [(60,range(10,60,10),['hail_mary','hc_fast','hc_abs']),
+    regimes = [(100,range(10,110,10),['hail_mary','hc_fast']),
                #(2,range(60,110,10),['hail_mary','hc_fast']),
                #(5,range(10,43,3),['hail_mary','hc_fast']),
                #(10,range(10,21),['hail_mary','hc_fast'])
                ]
+    two_times = [(2*k, k, ['hail_mary','hc_fast','hc_abs']) for k in range(10,110,10)]
+
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     RUN_ABSTRACTION_WITH_ADJACENCY = False
@@ -151,27 +156,7 @@ if __name__ == "__main__":
                     print(f"Time Taken (n_high={n_high}, n_low={n_low}, density={density}): {time.time()-t_start:.6f}s")
     
     
-    cut_off = "20260601-130000"
-    results_dir = Path("results/adjacency")
-    csv_files = [f for f in results_dir.glob("*.csv") if f.stem >= cut_off]
-
-    df_list = []
-    for f in csv_files:
-        data = pd.read_csv(f)
-        df_list.append(data)
-
-    if df_list:
-        results_df = pd.concat(df_list, ignore_index=True)
-        print(f"Collated {len(df_list)} file(s) saved after {cut_off}. Total rows: {len(results_df)}")
-    else:
-        print("No CSV files found in the directory.")
-    #plot_results(results_df,x_axis='n_low',y_axis='lost_weight_count',fixed_vars={'n_high':10,'n_low':20},row=None,col=None)
-    #plot_results(results_df,x_axis='k',y_axis='lost_weight_count',fixed_vars={'n_high':10,'n_low':20},row=None,col=None)
-    plot_results(results_df,x_axis='n_high',y_axis='runtime',fixed_vars={},row=None,col=None)
-    plot_results(results_df,x_axis='n_high',y_axis='memory',fixed_vars={},row=None,col=None)
-    for loss_name in LOSSES.keys():
-        print(f"Showing a plot of {loss_name}...")
-        plot_results(results_df, x_axis='n_high',y_axis=loss_name,fixed_vars={},row=None,col=None)
+    plot_adjacency_results(cut_off="20260606-124500")
     
     
 

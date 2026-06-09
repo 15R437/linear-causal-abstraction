@@ -62,22 +62,21 @@ def kl_loss(A_high,A_low,T,**kwds):
 
     return results['consistency_loss'].item()
 
-def observation_loss(A_low,A_high,S,T,**kwds):
-    I_low = np.eye(A_low.shape[0])
-    I_high = np.eye(A_high.shape[0])
+def observation_loss(E_low,E_high,S,T,**kwds):
+    I_low = np.eye(E_low.shape[0])
+    I_high = np.eye(E_high.shape[0])
 
-    lhs = (I_low - A_low) @ S
-    rhs = T @ (I_high - A_high)
+    
+    lhs = S @ E_high #(I_low - A_low) @ S
+    rhs = E_low @ T #T @ (I_high - A_high)
     obs_loss = np.mean((lhs - rhs)**2)
     return obs_loss
 
 def intervention_loss(E_low,S,T,**kwds):
     n_low,n_high = T.shape
-    partition_mask = (T != 0).astype(int)
-
     I_low = np.eye(n_low)
     
-    F_pi = partition_mask.T[...,None] * I_low
+    F_pi = T.T[...,None] * I_low
     term = I_low + F_pi @ (E_low - I_low)
 
     lhs = F_pi @ S[None,...]
@@ -85,6 +84,30 @@ def intervention_loss(E_low,S,T,**kwds):
     intv_loss = np.mean(np.mean((lhs - rhs)**2,axis=(-2,-1)))
 
     return intv_loss
+
+def intervention_loss_direct(E_low, E_high, S, T):
+    n_low, n_high = T.shape
+    I_low = np.eye(n_low)
+    I_high = np.eye(n_high)
+
+    F_ii = np.zeros((n_high, n_high, n_high))
+    idx = np.arange(n_high)
+    F_ii[idx, idx, idx] = 1.0
+    F_pi = ((T.T != 0).astype(float))[..., None] * I_low
+
+
+    E_high_do = E_high[None, ...] - (E_high - I_high)[None, ...] @ F_ii @ E_high[None, ...]
+
+    inv_term_low = np.linalg.inv(I_low + F_pi @ (E_low - I_low))
+    E_low_do = E_low - (E_low - I_low) @ inv_term_low @ F_pi @ E_low
+
+    loss = 0.
+    for i in range(n_high):
+        LHS = E_low_do[i] @ T          # (n_low, n_high)
+        RHS = (S + (T - S) @ F_ii[i]) @ E_high_do[i]  # (n_low, n_high)
+        loss += np.mean((LHS - RHS) ** 2)
+
+    return loss / n_high
 
 def abstraction_residual(A_low, T, A_high, **kwds):
         n_low,n_high = T.shape
@@ -98,34 +121,66 @@ def abstraction_residual(A_low, T, A_high, **kwds):
             S_list.append(s_j)
         S = np.stack(S_list, axis=1)  # (n_low, n_high)
 
-        influence_matrix = A_low @ (T * S)  # (n_low, n_high)
+        influence_matrix = A_low @ S # (n_low, n_high)
 
         T_sq = T ** 2                                          # (n_low, n_high)
         t_i_norms = np.clip(T_sq.sum(axis=0), a_min=1e-8, a_max=None)                # (n_high,) effective block sizes
 
         # Weighted mean: a_star[i,j] = sum_r w[r,i] * influence[r,j] / sum_r w[r,i]
         #a_star = (T_sq.T @ influence_matrix) / t_i_norms[:,None]  # (n_high, n_high)
-        diff = influence_matrix[None, :, :] - A_high[:, None, :]
+        diff = influence_matrix[None, :, :] - A_high[:, None, :]* T.T[:, :, None]
 
         weights = T_sq.T[:, :, None]                               # (n_high, n_low, 1)
         residuals = (weights * diff ** 2).sum(axis=1) / t_i_norms[:,None]  # (n_high, n_high)
         diag_mask = 1.0 - np.eye(n_high)
         return (residuals * diag_mask).sum()
 
-def graph_loss(A_low,T):
-    n_low,n_high = T.shape
+import numpy as np
+
+def graph_loss(A_low, T, **kwds):
+    n_low = A_low.shape[0]
     A_low_binary = (A_low != 0).astype(float)
-    H = A_low_binary @ T # H[i,j] is the number of nodes in cluster j that node i has an edge to
-    C = np.tanh(10*H) # C[i,j] = 0 iff node i is not connected to cluster j otherwise C[i,j] \approx 1
-
-    numerator = T.T @ C 
-    denominator = np.clip(T.sum(axis=0, keepdims=True).T, a_min=1e-8, a_max=None)
-    P = numerator / denominator  
-
-    mask = 1.0 - np.eye(n_high)
-    graph_loss = (P * (1.0 - P) * mask).sum()
+    
+    # H[i,j] = number of edges between low-level node i and high-level cluster j
+    H = A_low_binary @ T 
+    
+    # 2. Replicate the forward pass of: 1 - relu(1 - H)
+    # This clamps the upper bound of H to 1.0 without affecting values below it
+    C = 1.0 - np.maximum(0, 1.0 - H) 
+    
+    # 3. Compute number of shared cluster connections between low-level nodes
+    CC = C @ C.T 
+    
+    # 4. Pairwise squared Euclidean distances: ||C[i] - C[j]||^2 using broadcasting
+    CC_norm = (C ** 2).sum(axis=1)
+    C_diff_sq = CC_norm[:, None] + CC_norm[None, :] - 2 * CC  
+    
+    # 5. Continuous co-assignment matrix
+    co_assign = T @ T.T                                   
+    diag_mask = 1.0 - np.eye(n_low)
+    
+    # 6. Calculate total masked mean loss
+    graph_loss = (co_assign * diag_mask * C_diff_sq).mean()
     
     return graph_loss
+
+import numpy as np
+
+def topo_loss(A_low, T, A_high, **kwargs):
+    n_high = T.shape[1]
+    
+    # 1. Binarize low-level graph connections
+    A_low_binary = (A_low != 0).astype(float)
+    dag_mask = (A_high != 0).astype(float)
+    
+    # M[i,j] represents the aggregate structural connection from cluster i to cluster j
+    M = T.T @ A_low_binary @ T 
+        
+    violation_mask = 1.0 - dag_mask - np.eye(n_high)
+    
+    topo_loss = np.mean(violation_mask * (M ** 2))
+    
+    return topo_loss
 
 def abstraction_loss(E_low,A_low,A_high,S,T,**kwds):
     obs_loss = observation_loss(A_low=A_low, A_high=A_high, S=S, T=T)
