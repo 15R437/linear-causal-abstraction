@@ -33,7 +33,7 @@ def hail_mary_abstract(A_low, k, logits_init=None, **kwds):
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log(n_low*k)+1)
-    model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=False, compute_topo=False, verbose=False)
+    model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=False, compute_topo=False, compute_intv=False, verbose=False)
 
     S_pred, T_pred, A_high = process_output(model,dag_enforcer='khan')
 
@@ -44,7 +44,18 @@ def hail_mary_graph(A_low, k, logits_init=None, **kwds):
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log(n_low*k)+1)
-    model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=False, verbose=False)
+    model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False, verbose=False)
+
+    S_pred, T_pred, A_high = process_output(model,dag_enforcer='khan')
+
+    return S_pred, T_pred, A_high
+
+def hail_mary_intv(A_low, k, logits_init=None, **kwds):
+    A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
+    n_low = A_low.shape[0]
+    model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
+    num_epochs = 1000 * int(np.log(n_low*k)+1)
+    model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=False, compute_topo=False, compute_intv=True, verbose=False)
 
     S_pred, T_pred, A_high = process_output(model,dag_enforcer='khan')
 
@@ -55,9 +66,20 @@ def hail_mary_abstract_graph(A_low, k, logits_init=None, **kwds):
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log(n_low*k)+1)
-    model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=True, compute_topo=False, verbose=False)
+    model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=True, compute_topo=False, compute_intv=False, verbose=False)
 
     S_pred, T_pred, A_high = process_output(model,dag_enforcer='khan')
+
+    return S_pred, T_pred, A_high
+
+def hail_mary_intv_topo(A_low, k, logits_init=None, **kwds):
+    A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
+    n_low = A_low.shape[0]
+    model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
+    num_epochs = 1000 * int(np.log(n_low*k)+1)
+    model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=False, compute_topo=True, compute_intv=True, verbose=False)
+
+    S_pred, T_pred, A_high = process_output(model,dag_enforcer='self')
 
     return S_pred, T_pred, A_high
 
@@ -66,7 +88,7 @@ def hail_mary_abstract_topo(A_low, k, logits_init=None, **kwds):
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log(n_low*k)+1)
-    model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=False, compute_topo=True, verbose=False)
+    model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=False, compute_topo=True, compute_intv=False, verbose=False)
 
     S_pred, T_pred, A_high = process_output(model,dag_enforcer='self')
 
@@ -77,7 +99,7 @@ def hail_mary_graph_topo(A_low, k, logits_init=None, **kwds):
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log(n_low*k)+1)
-    model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=True, verbose=False)
+    model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False, verbose=False)
 
     S_pred, T_pred, A_high = process_output(model,dag_enforcer='self')
 

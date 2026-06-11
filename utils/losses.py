@@ -85,7 +85,7 @@ def intervention_loss(E_low,S,T,**kwds):
 
     return intv_loss
 
-def intervention_loss_direct(E_low, E_high, S, T):
+def intervention_loss_direct(E_low, E_high, S, T, **kwds):
     n_low, n_high = T.shape
     I_low = np.eye(n_low)
     I_high = np.eye(n_high)

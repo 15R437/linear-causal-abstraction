@@ -106,7 +106,7 @@ def inter_block_recon_penalty(A_low, T, A_high):
     diag_mask = 1.0 - torch.eye(A_low.shape[0], device=A_low.device)
     inter_mask = inter_mask * diag_mask
     
-    return torch.mean(((A_low - A_hat) * inter_mask) ** 2)
+    return torch.mean(((A_low - A_hat)*inter_mask) ** 2)
 
 def balance_penalty(T_soft):
     """
@@ -146,12 +146,9 @@ def regularised_surjective_init(n_low, n_high, noise_std=0.1):
     
     # Shuffle row assignments so the guaranteed coverage isn't locked to the top rows
     targets = targets[torch.randperm(n_low)]
-    
-    # 3. Calculate the exact structural margin needed
-    # Protects against ln(0) if n_high happens to be 1
+
     min_margin = math.log(max(1, n_high - 1)) 
-    
-    # Add a 5-sigma buffer to ensure noise doesn't pull the softmax below 0.5
+
     margin = min_margin + (5 * noise_std) + 0.1
     
     # 4. Inject the margin into the targeted positions
@@ -163,9 +160,11 @@ def regularised_surjective_init(n_low, n_high, noise_std=0.1):
 class HailMary(nn.Module):
     def __init__(self, n_low, n_high, A_low, logits_init=None, init_assignment=None):
         super().__init__()
+        self.device = A_low.device
         self.n_low = n_low
         self.n_high = n_high
         self.register_buffer('A_low', A_low)  # (n_low, n_low) low-level weight matrix
+        self.register_buffer('E_low', torch.linalg.inv(torch.eye(n_low) - A_low))
         out_degrees = (self.A_low != 0).float().sum(dim=1)
         self.register_buffer('sink_weights', 1.0 / (1.0 + out_degrees)) # 1.0 for pure sinks, approaches 0 for heavy sources
 
@@ -175,9 +174,9 @@ class HailMary(nn.Module):
     
     def dag_mask(self,temp=1.):
         pos = (self.n_high - 1) - F.relu(self.n_high - 1 - self.node_positions)
-        diff = pos.unsqueeze(0) - pos.unsqueeze(1) #self.node_positions.unsqueeze(0) - self.node_positions.unsqueeze(1)
+        diff =self.node_positions.unsqueeze(0) - self.node_positions.unsqueeze(1) #pos.unsqueeze(0) - pos.unsqueeze(1) #
         hard_mask = (diff > 0).float()
-        temp = self.n_high / 3
+        #temp = self.n_high / 3
         soft_mask = torch.sigmoid(diff/temp) - 0.5*torch.eye(self.n_high, device=self.node_positions.device)
         dag_mask = soft_mask + (hard_mask - soft_mask).detach()
         #dag_mask = torch.triu(torch.ones(self.n_high,self.n_high),diagonal=1)
@@ -200,13 +199,34 @@ class HailMary(nn.Module):
     
     def get_A_high(self, T, S):
         # T, S: (n_low, n_high)
-        ATS = self.A_low @ (T * S)                        # (n_low, n_high), col j = A_low @ (t_j * s_j)
-        A_high = T.T @ ATS                                # (n_high, n_high), [i,j] = t_i^T @ A_low @ (t_j*s_j)
-        t_norms = T.sum(dim=0).clamp(min=1e-8)            # (n_high,) = ||t_i||^2 for binary T
+        AS = self.A_low @ S                       # (n_low, n_high), col j = A_low @ (t_j * s_j)
+        A_high = T.T @ AS                                # (n_high, n_high), [i,j] = t_i^T @ A_low @ (t_j*s_j)
+        t_norms = (T**2).sum(dim=0).clamp(min=1e-8)            # (n_high,) = ||t_i||^2 for binary T
         A_high = A_high / t_norms.unsqueeze(1)
         A_high = A_high * (1 - torch.eye(self.n_high, device=T.device))           # normalise each row by block size
         
         return A_high
+    
+    def get_E_high(self, T):
+        E = self.E_low
+        I = torch.eye(self.n_low,device=self.device)
+        F_pi = torch.diag_embed(T.T) #(n_high, n_low, n_low)
+        term = I + F_pi @ (E - I)
+        ET = E @ T
+        ET_batch = ET.unsqueeze(0).expand(self.n_high,-1,-1)
+        T_batch = T.unsqueeze(0).expand(self.n_high, -1, -1) 
+        lhs = torch.bmm(F_pi,ET_batch)
+        term_T = torch.bmm(term, T_batch)  # (n_high, n_low, n_high)
+        # extract column i from each batch i: term[i] @ T[:,i]
+        rhs_col = term_T[torch.arange(self.n_high), :, torch.arange(self.n_high)]  # (n_high, n_low)
+        rhs = rhs_col.unsqueeze(-1).expand(-1, -1, self.n_high)  # (n_high, n_low, n_high)
+
+        dot_prod = torch.sum(lhs * rhs, dim=1)
+        a_norm = torch.sum(lhs * lhs, dim=1)
+        b_norm = torch.sum(rhs * rhs, dim=1)
+        E_high_ij = dot_prod/(b_norm + 1e-8)
+
+        return E_high_ij
 
     
     def abstraction_residual(self, T_soft, A_high=None):
@@ -234,7 +254,7 @@ class HailMary(nn.Module):
         # Weighted mean: a_star[i,j] = sum_r w[r,i] * influence[r,j] / sum_r w[r,i]
         if A_high is None:
             A_high = (T_soft.T @ influence_matrix) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
-
+            A_high = A_high * (1 - torch.eye(self.n_high, device=T_soft.device)) 
         diff = influence_matrix.unsqueeze(0) - A_high.unsqueeze(1) * T_soft.T.unsqueeze(2)
 
         # Weighted variance: sum_r w[r,i] * diff[i,r,j]^2 / sum_r w[r,i]
@@ -242,11 +262,35 @@ class HailMary(nn.Module):
         residuals = (weights * diff ** 2).sum(dim=1) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
 
         # Mask diagonal and sum
-        diag_mask = 1.0 - torch.eye(n_high, device=T_soft.device)
+        diag_mask = 1.0 - torch.eye(n_high, device=self.device)
         return (residuals * diag_mask).sum()
+    
+    def intervention_loss(self, S, T, E_high, corollary_version=True):
+        E_low = self.E_low
+        I_low = torch.eye(self.n_low,device=self.device)
+        e_j_batch = torch.eye(self.n_high, device=self.device)
+        F_jj_batch = torch.diag_embed(e_j_batch)
+        F_pi_batch = torch.diag_embed(torch.einsum('ij,kj->ik',e_j_batch,T)) # ~ 1e-1
+       
+        term = I_low + F_pi_batch @ (E_low - I_low) # ~ 1e-1
+        if not corollary_version:
+            lhs = (F_pi_batch @ E_low @ T).to(self.device)
+            rhs = (term @ T @ F_jj_batch @ E_high).to(self.device)
+            residual = (lhs - rhs) ** 2
+            diag_mask = 1.0 - torch.eye(self.n_high, device=self.device)
+            masked_residual = diag_mask.unsqueeze(1) * residual
+            loss = (masked_residual).sum()
+        else:
+            lhs = (F_pi_batch @ S).to(self.device) # ~ 1e-2
+            rhs = (term @ F_pi_batch @ T) # ~ 1e-3
+            residual = (lhs - rhs)**2 # ~ 1e-4
+            loss = residual.sum() 
+        
+        return loss
+        
 
 
-    def forward(self,temp=1.,T=None,compute_abs=False,compute_graph=True, compute_topo=False):
+    def forward(self,temp=1.,T=None,compute_abs=False,compute_graph=True, compute_topo=False, compute_intv=False):
         if T is None:
             T_hard, T_soft = self.get_partition(temp) # soft T
             T = T_soft
@@ -258,90 +302,108 @@ class HailMary(nn.Module):
         dag_mask, soft_mask = self.dag_mask(temp)
         A_high = self.get_A_high(T,S)
 
-        recon_loss = inter_block_recon_penalty(self.A_low,T,A_high) #reconstruction_loss(self.A_low, T_soft, A_high) #balance_penalty(T_soft)  
+        recon_loss = inter_block_recon_penalty(A_low_binary,T,A_high*dag_mask) #reconstruction_loss(self.A_low, T_soft, A_high) #balance_penalty(T_soft)  
         base_entropy = -torch.sum(T * torch.log(T + 1e-8), dim=1)
         entropy_loss = base_entropy.mean() #(base_entropy * (1.0 + 2.0 * self.sink_weights)).mean()
         #entropy_loss = -torch.sum(T * torch.log(T + 1e-8), dim=1).mean()
-        column_maxes = T.max(dim=0).values  
-        col_deficit = F.relu(0.5 - column_maxes)  
-        surjective_loss = (col_deficit * (-torch.log(T + 1e-8).mean(dim=0))).sum()
-        #surjective_loss = F.relu(.5 - T.max(dim=0).values).mean() #torch.var(torch.sum(T_soft,dim=0)) #F.relu(torch.prod(1-T_soft,dim=0) - 0.1).sum()#torch.sum(F.relu(1.0 - T.sum(dim=0)))
+        top_k,_ = torch.topk(T,k=2,dim=0) 
+        col_deficit = F.relu(0.5 - top_k.mean(dim=0))  
+        surjective_loss = (col_deficit * (-torch.log(T + 1e-8).mean(dim=0))).sum() #torch.sum(T.mean(dim=0) * torch.log(T.mean(dim=0) + 1e-8)) + math.log(self.n_high)  
+        #surjective_loss = F.relu(.5 - T.max(dim=0).values).mean() #torch.var(torch.sum(T_soft,dim=0)) #F.relu(torch.prod(1-T_soft,dim=0) - 0.1).sum() #torch.sum(F.relu(1.0 - T.sum(dim=0)))
         
         if compute_abs:
             abs_loss = self.abstraction_residual(T,A_high)
         else:
-            abs_loss = torch.tensor(0.0, device=T.device)
+            abs_loss = torch.tensor(0.0, device=self.device)
 
         if compute_graph:
-            H = A_low_binary @ T # H[i,j] is the number of edges between node i and cluster j
+            H = A_low_binary @ T # H[i,j] is the EXPECTED number of edges between node i and cluster j.
+            H = H / (H.sum(dim=1, keepdim=True) + 1e-8)
+            """
             one = H/(1+H) + (1 - H/(1+H)).detach()
             C = one - F.relu(one - H) # C[i,j] = 0 iff node i is not connected to cluster j otherwise C[i,j] = 1
             CC = C @ C.T # CC[i,j] = number of shared cluster connections between node i and node j
             CC_norm = (C ** 2).sum(dim=1)                         # (n_low,)
             C_diff_sq = CC_norm.unsqueeze(1) + CC_norm.unsqueeze(0) - 2 * CC  # ||C[i] - C[i']||^2
-
+            """
+            CC = H @ H.T
+            H_norm_sq = (H**2).sum(1)
+            C_diff_sq = (
+                H_norm_sq[:,None]
+                + H_norm_sq[None,:]
+                - 2*CC
+            )
             co_assign = T @ T.T                                   # (n_low, n_low)
             diag_mask = 1 - torch.eye(self.n_low, device=T.device)
             graph_loss = (co_assign * diag_mask * C_diff_sq).mean()
         else:
-            graph_loss = torch.tensor(0.0, device=T.device)
+            graph_loss = torch.tensor(0.0, device=self.device)
 
         if compute_topo:
             M = T.T @ A_low_binary @ T # M[i,j] is the number of edges between cluster i and cluster j
             one = M/(1+M) + (1 - M/(1+M)).detach()
             D = one - F.relu(one - M) # D[i,j] = 0 iff cluster i is not connected to cluster j otherwise D[i,j] = 1
-            topo_loss = torch.mean((1 - dag_mask - torch.eye(self.n_high)) * M.detach() ** 2) 
+            topo_loss = torch.mean((1 - dag_mask - torch.eye(self.n_high)) * M ** 2) 
         else:
-            topo_loss = torch.tensor(0.0, device=T.device)
+            topo_loss = torch.tensor(0.0, device=self.device)
+        
+        if compute_intv:
+            E_high = self.get_E_high(T)
+            intv_loss = self.intervention_loss(T=T,S=S,E_high=E_high)
+        else:
+            intv_loss = torch.tensor(0.0, device=self.device)
         
         
-        return recon_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss
+        return recon_loss, abs_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss
 
-    def train_step(self, optimiser, lambda_abs=1., lambda_graph=1., lambda_topo=1., lambda_surj=1, lambda_entropy=1., temp=1., compute_abs=True, compute_graph=True, compute_topo=True):
+    def train_step(self, optimiser, lambda_abs=1., lambda_graph=1., lambda_topo=1., lambda_intv=1, lambda_surj=1, lambda_entropy=1., temp=1., compute_abs=True, compute_graph=True, compute_topo=True, compute_intv=True):
         optimiser.zero_grad()
-        recon_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss = self.forward(temp, compute_abs=compute_abs, compute_graph=compute_graph, compute_topo=compute_topo)
+        recon_loss, abs_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss = self.forward(temp, compute_abs=compute_abs, compute_graph=compute_graph, compute_topo=compute_topo, compute_intv=compute_intv)
         total_loss = (recon_loss + 
                       (lambda_abs) * abs_loss + 
                       (lambda_graph) * graph_loss +
                       (lambda_topo) * topo_loss +
+                      (lambda_intv) * intv_loss +
                       (lambda_surj) * surjective_loss + 
                       (lambda_entropy) * entropy_loss 
                       )
         total_loss.backward()
         optimiser.step()
-        return recon_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), surjective_loss.item(), entropy_loss.item()
+        return recon_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), intv_loss.item(), surjective_loss.item(), entropy_loss.item()
     
     def loss_tracker(self, loss, alpha=0.1, patience=50, min_delta=1e-4):
         pass
 
-    def train(self, num_epochs, lambda_abs=1., lambda_graph=1, lambda_topo=1., lambda_surj=1e-2, lambda_min_entropy=1e-2, lambda_max_entropy=1e-2, verbose=True,keep_history=False,compute_abs=True, compute_graph=False, compute_topo=False):
+    def train(self, num_epochs, lambda_abs=1., lambda_graph=1, lambda_topo=1., lambda_intv=1e4, lambda_surj=1, lambda_min_entropy=1e-2, lambda_max_entropy=1e-2, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False):
         optimiser = torch.optim.Adam([{'params':[self.logits],'lr':1e-2}, {'params':[self.node_positions], 'lr':1e-2}],betas=(0.8,0.99))
-        history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
+        history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
         lambda_entropy = lambda_max_entropy
         rate = calculate_anneal_rate(lambda_max_entropy, lambda_min_entropy, num_epochs)
         for epoch in range(num_epochs):
             lambda_entropy *= rate
-            recon_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss = self.train_step(optimiser, lambda_abs, lambda_graph, lambda_topo, lambda_surj, lambda_entropy, compute_abs=compute_abs, compute_graph=compute_graph, compute_topo=compute_topo)
+            recon_loss, abs_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss = self.train_step(optimiser, lambda_abs, lambda_graph, lambda_topo, lambda_intv=lambda_intv, lambda_surj=lambda_surj, lambda_entropy=lambda_entropy, compute_abs=compute_abs, compute_graph=compute_graph, compute_topo=compute_topo, compute_intv=compute_intv)
             if epoch % 100 == 0 or epoch == num_epochs - 1:
                 log(f"""Epoch {epoch+1}/{num_epochs},
-                        Reconstruction: {recon_loss:.4f},
-                        Abstraction: {abs_loss:.4f}, 
-                        Graph: {graph_loss:.4f},
-                        Topo: {topo_loss:.4f}
-                        Surjective: {surjective_loss:.4f},
+                        Reconstruction: {recon_loss:.6f},
+                        Abstraction: {abs_loss:.6f}, 
+                        Graph: {graph_loss:.6f},
+                        Topo: {topo_loss:.6f},
+                        Intv: {intv_loss:.6f},
+                        Surjective: {surjective_loss:.6f},
                         Entropy: {entropy_loss} """, verbose=verbose)
             if keep_history:
                 history['recon_loss'].append(recon_loss)
                 history['abs_loss'].append(abs_loss * lambda_abs)
                 history['graph_loss'].append(graph_loss * lambda_graph)
                 history['topo_loss'].append(topo_loss * lambda_topo)
+                history['intv_loss'].append(intv_loss * lambda_intv)
                 history['surjective_loss'].append(surjective_loss * lambda_surj)
                 history['entropy_loss'].append(entropy_loss * lambda_entropy)
                 history['T'].append(self.get_partition()[1].cpu().detach().numpy())
                 history['soft_mask'].append(self.dag_mask()[1].cpu().detach().numpy())
         return history
 
-def process_output(model,min_temp=1,dag_enforcer: Literal['khan','self'] = 'khan'):
+def process_output(model,min_temp=1,dag_enforcer: Literal['khan','self'] = 'self'):
     model.eval()
     with torch.no_grad():
         # 1. Recover T
@@ -405,25 +467,30 @@ if __name__ == "__main__":
         gt_data.sort(key= lambda x: x[2], reverse=True)
         A_low,T_gt,max_intv_loss = gt_data[0]
         n_low,n_high = T_gt.shape
+        k = n_high
         S_gt = get_S(A_low=A_low, T=T_gt)
         A_high_gt = get_A_high(A_low=A_low, T=T_gt, priority='abstraction')
 
         
     elif DATA_TYPE=='easy_benchmark':
         seed = None #44
-        n_high = 2  #number of high-level variables
         n_low = 10 #number of low-level variables
+        n_high = 3  #number of high-level variables
+        k = n_high
         cluster_balance = 0.1
         blockiness = 0.5
         A_low, T_gt, S_gt, A_high_gt = generate_easy_benchmark(n_low=n_low,cluster_balance=cluster_balance,blockiness=blockiness,shuffle=False) #generate_generalized_benchmark(n_low=n_low,n_high=n_high,blockiness=1.0,shuffle=True,seed=seed)
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_high = 16  #number of high-level variables
-        n_low = 100 #number of low-level variables
+        n_low = 700 #number of low-level variables
+        n_high = 2  #number of high-level variables
+        k = n_high
         density = 0.4
-        internal = False
-        A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=False,internal=internal)
+        internal_density = 0.
+        blockiness = 0.1
+        heteregoneity = 1.
+        A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=False,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density)
 
     # Ground Truth Visualisation & Diagnostics 
     print(f"n_low = {n_low}, n_high = {n_high}")
@@ -437,7 +504,7 @@ if __name__ == "__main__":
     )
     visualize_causal_graph(A_low, A_high_gt, T_gt, S_gt, title='Ground Truth Causal Abstraction')
 
-    #plot_probability_path(T_gt=T_gt, A_low=A_low, LOSSES={'observation_loss':observation_loss,'graph_loss':graph_loss,'abstraction_residual':abstraction_residual},initial_T='surjective')
+    #plot_probability_path(T_gt=T_gt, A_low=A_low, LOSSES={'graph_loss':graph_loss,'abstraction_residual':abstraction_residual, 'intervention_loss':intervention_loss_direct}, initial_T='surjective')
 
     obs_loss_gt = observation_loss(E_low=E_low, E_high=E_high_gt, S=S_gt, T=T_gt)
     intv_loss_gt = intervention_loss_direct(E_low=E.cpu().numpy(), E_high=E_high_gt, S=S_gt, T=T_gt)
@@ -454,21 +521,24 @@ if __name__ == "__main__":
     T_init = T_gt.copy()
     T_init[flip_indices] = 1 - T_init[flip_indices]
     T_init = None #torch.from_numpy(T_init).float()
-    model = HailMary(n_low, n_high, A_low=torch.from_numpy(A_low).float(),logits_init=T_init)
-    num_epochs = 1000 * int(np.log(n_low*n_high)+1)
+    model = HailMary(n_low, n_high=k, A_low=torch.from_numpy(A_low).float(),logits_init=T_init)
+    num_epochs = 1000 * int(np.log(n_low*k)+1)
     start_time = time.time()
     history = model.train(num_epochs=num_epochs, verbose=True, keep_history=True)
     runtime_hm = time.time() - start_time
     T_hard, T_soft = model.get_partition(min_temp)
-    _,model_abs_loss, _, _, _,_ = model(min_temp)
-    print(f"Model Abs Loss: {model_abs_loss.item()}, Row-wise MinMax of T_soft: {torch.min(torch.max(T_soft,dim=1).values).item()}")
+   
+    print(f"Row-wise MinMax of T_soft: {torch.min(torch.max(T_soft,dim=1).values).item()}")
     #print(F"Node Positions: {model.node_positions.data.cpu().numpy()}")
     
     #learner, history_dag = learn_dag(A_low=torch.from_numpy(A_low).float(), T=T.cpu().detach(),verbose=True, keep_history=True)
     #dag_mask, _ = learner.dag_mask()
 
     S_pred, T_pred, A_high_pred = process_output(model)
-    E_high_pred = np.linalg.inv(np.eye(n_high) - A_high_pred)
+    E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
+    print(f"A_low: {A_low}")
+    print(f"T: {T_pred}")
+    print(f"A_high: {A_high_pred}")
     #A_high_pred = dag_mask.cpu().detach().numpy() * A_high_pred
 
     # Evaluation
@@ -479,13 +549,13 @@ if __name__ == "__main__":
 
     # Hierarchical Clustering Baseline
     start_time = time.time()
-    S_dict,T_dict,A_high_dict = hierarchical_clustering(A_low=A_low, n_high=n_high,dag_learner='khan')
+    S_dict,T_dict,A_high_dict = hierarchical_clustering(A_low=A_low, n_high=k,dag_learner='khan')
     runtime_hc = time.time() - start_time
-    E_high_baseline = np.linalg.inv(np.eye(n_high) - A_high_dict[n_high])
-    obs_loss = observation_loss(E_low=E_low, E_high=E_high_baseline, S=S_dict[n_high], T=T_dict[n_high])
-    intv_loss = intervention_loss_direct(E_low=E.cpu().numpy(), E_high=E_high_baseline, S=S_dict[n_high], T=T_dict[n_high])
-    abs_residual = abstraction_residual(A_low=A_low,T=T_dict[n_high], A_high=A_high_dict[n_high])
-    print(f"(HC) Time: {runtime_hc:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_dict[n_high].sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_dict[n_high])}")
+    E_high_baseline = np.linalg.inv(np.eye(k) - A_high_dict[k])
+    obs_loss = observation_loss(E_low=E_low, E_high=E_high_baseline, S=S_dict[k], T=T_dict[k])
+    intv_loss = intervention_loss_direct(E_low=E.cpu().numpy(), E_high=E_high_baseline, S=S_dict[k], T=T_dict[k])
+    abs_residual = abstraction_residual(A_low=A_low,T=T_dict[k], A_high=A_high_dict[k])
+    print(f"(HC) Time: {runtime_hc:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_dict[k].sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_dict[k])}")
     
     # Visualising Hail Mary Results
     #plot_assignment_raster(history,T_gt=T_gt)
@@ -504,9 +574,10 @@ if __name__ == "__main__":
 
     ax[0].plot(range(0,len(history['recon_loss']),10), history['recon_loss'][::10])
     ax[0].plot(range(0,len(history['abs_loss']),10), history['abs_loss'][::10])
+    ax[0].plot(range(0,len(history['intv_loss']),10), history['intv_loss'][::10])
     ax[0].plot(range(0,len(history['topo_loss']),10), history['topo_loss'][::10])
     ax[0].plot(range(0,len(history['graph_loss']),10), history['graph_loss'][::10])
-    ax[0].legend(['Reconstruction Loss', 'Abstraction Loss','Topo Loss', 'Graph Loss'])
+    ax[0].legend(['Reconstruction Loss', 'Abstraction Loss','Intervention Loss', 'Topo Loss', 'Graph Loss'])
     ax[0].set_yscale('log')
     ax[0].set_xlabel("Epoch")
     ax[0].set_ylabel("Loss")

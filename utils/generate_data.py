@@ -1,3 +1,6 @@
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.getcwd()))
 import numpy as np
 from scipy.stats import gennorm
 from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_linear_concretization
@@ -195,7 +198,80 @@ def generate_random_T(n_low,n_high,lower_bounds=(1.,),upper_bounds=(1.,),marg_pr
 
     return T,block_sizes
 
-def T_concretisation_sampling(A_high,T,edge_density=0.3,seed=None,max_abs_weight=1.):
+def sample_c_vector_old(s_j, heterogeneity, rng):
+    N = len(s_j)
+    s_j = s_j.reshape(-1, 1)
+    c_base = s_j / (s_j.T @ s_j)
+
+    if heterogeneity == 0 or N == 1:
+        return c_base
+
+    eta = rng.standard_normal((N, 1))
+    eta = eta - s_j * ((s_j.T @ eta) / (s_j.T @ s_j))
+
+    eta_norm = np.linalg.norm(eta)
+
+    if eta_norm > 1e-8:
+        eta = eta / eta_norm
+
+    c = c_base + heterogeneity * eta
+
+    return c
+
+def sample_c_vector(s_j, heterogeneity, rng, blockiness=1.0):
+    """
+    Samples a vector c such that c.T @ s_j = 1.
+    
+    Parameters:
+        s_j: np.ndarray, the local s vector for the cluster
+        heterogeneity: float, scales the orthogonal noise variance
+        rng: np.random.Generator
+        connection_probability: float between 0 and 1. Lower means more zeros in c.
+    """
+    N = len(s_j)
+    s_j = s_j.reshape(-1, 1)
+    
+    # Identify coordinates where s_j is non-zero to safely satisfy the constraint
+    valid_indices = np.where(s_j.flatten() != 0)[0]
+    if len(valid_indices) == 0:
+        return np.zeros((N, 1))
+
+    # 1. Determine which nodes will be active (have edges)
+    # Force at least one valid node to be active so we can satisfy c.T @ s_j = 1
+    active_indices = [rng.choice(valid_indices)]
+    for idx in range(N):
+        if idx not in active_indices and rng.random() < blockiness:
+            active_indices.append(idx)
+            
+    active_indices = np.array(sorted(active_indices))
+    
+    # 2. Slice s_j down to just the active sub-vector
+    s_active = s_j[active_indices]
+    N_active = len(active_indices)
+    
+    # 3. Apply your exact original logic to the active subset
+    c_active_base = s_active / (s_active.T @ s_active)
+
+    if heterogeneity == 0 or N_active == 1:
+        c_active = c_active_base
+    else:
+        # Generate noise orthogonal ONLY to the active sub-vector
+        eta_active = rng.standard_normal((N_active, 1))
+        eta_active = eta_active - s_active * ((s_active.T @ eta_active) / (s_active.T @ s_active))
+
+        eta_norm = np.linalg.norm(eta_active)
+        if eta_norm > 1e-8:
+            eta_active = eta_active / eta_norm
+
+        c_active = c_active_base + heterogeneity * eta_active
+
+    # 4. Construct the final full-size c vector
+    c = np.zeros((N, 1))
+    c[active_indices] = c_active
+    
+    return c
+
+def T_concretisation_sampling(A_high,T,internal_density=0,seed=None,heterogeneity=1.,blockiness=1.):
     """
     Samples a low-level causal model (A_low) from a given high-level model (A_high)
     such that A_low is a T-abstraction of A_high.
@@ -212,29 +288,30 @@ def T_concretisation_sampling(A_high,T,edge_density=0.3,seed=None,max_abs_weight
     A_low = np.zeros((n_low,n_low))
     concrete_blocks = [list(np.where(T[:,j] != 0)[0]) for j in range(n_high)]
     
+    S_gt = np.zeros((n_low,n_high))
     for j in range(n_high):
         N_j = len(concrete_blocks[j])
-        A_jj = random_dag(N_j,edge_density,max_abs_weight)
+        A_jj = random_dag(N_j,internal_density)
         A_low[np.ix_(concrete_blocks[j], concrete_blocks[j])] = A_jj
         t_j = T[concrete_blocks[j], j].reshape(N_j,1)
         s_j = np.linalg.solve(np.eye(N_j) - A_jj, t_j)
+        
+        S_gt[concrete_blocks[j],j] = s_j.flatten()
         for i in range(n_high):
             if i == j:
                 continue
             t_i = T[concrete_blocks[i], i].reshape(len(concrete_blocks[i]),1)
-            for l,_ in enumerate(concrete_blocks[i]):
-                v = rng.standard_normal(size=N_j-1)
-                v = np.concatenate([v,[1-np.sum(v)]]).reshape(-1,1)  #ensure sum to 1
-                c = v/s_j
-                try:
-                    A_low[np.ix_(concrete_blocks[i],concrete_blocks[j])][l,:] = A_high[i,j]*t_i[l,0]*c.T
-                except IndexError:
-                    import pdb;pdb.set_trace()
+            for l, row_idx in enumerate(concrete_blocks[i]):
+                #v = rng.standard_normal(size=N_j-1)
+                #v = np.concatenate([v,[1-np.sum(v)]]).reshape(-1,1)  #ensure sum to 1
+                c = sample_c_vector(s_j,heterogeneity=heterogeneity,blockiness=blockiness,rng=rng) #c = v/s_j
+                A_low[row_idx,concrete_blocks[j]] = A_high[i,j]*t_i[l,0]*c.flatten()
     
-    return A_low
+    return A_low, S_gt
 
-def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg_prob=0,seed=None,max_attempts=10,shuffle=False,internal=False, **kwds):
+def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., **kwds):
     rng = np.random.default_rng(seed)
+    internal_density = 0. if internal_density is None else internal_density
     for _ in range(max_attempts):
         attempt_seed = int(rng.integers(0, 2**32 - 1)) if seed is not None else None
 
@@ -246,7 +323,7 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg
         
         try:
             T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=attempt_seed)
-            A_low, S_gt = sample_linear_concretization(A_high_gt,T_gt,block_size,internal=internal,alpha=1.,style='uniform')
+            A_low, S_gt = T_concretisation_sampling(A_high=A_high_gt,T=T_gt,internal_density=internal_density,blockiness=blockiness,heterogeneity=heterogeneity,seed=seed)#sample_linear_concretization(A_high_gt,T_gt,block_size,internal=internal,alpha=1.,style='uniform')
             assert np.any(A_low != 0) #ensure we don't return a trivial graph with no edges
             if shuffle:
                 perm = rng.permutation(n_low)
@@ -273,16 +350,16 @@ if __name__ == "__main__":
     n_high = 2  #number of high-level variables
     n_low = 6 #number of low-level variables
     edge_density = 0.9
-    A_high = random_dag(n_high, edge_density, max_abs_weight=3., seed=seed)
+    A_high = random_dag(n_high, edge_density, seed=seed)
     print("High-level adjacency matrix A_high:")
     print(A_high)
 
     #Define a block-diagonal T matrix
-    T = generate_random_T(n_low, n_high, seed=seed)
+    T,_ = generate_random_T(n_low, n_high, seed=seed)
     print("\nAbstraction matrix T:")
     print(T)
 
-    block_sizes = np.sum((T!=0),axis=0).astype(int).tolist() + [0]
-    A_low,_ = sample_linear_concretization(A_high,T,block_size=block_sizes) #T_concretisation_sampling(A_high, T, edge_density=edge_density, max_abs_weight=1.)
+    #block_sizes = np.sum((T!=0),axis=0).astype(int).tolist() + [0]
+    A_low,_ = T_concretisation_sampling(A_high, T, internal_density=edge_density) #sample_linear_concretization(A_high,T,block_size=block_sizes) #
     print("\nSampled low-level adjacency matrix A_low:")
     print(A_low)

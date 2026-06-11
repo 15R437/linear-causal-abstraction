@@ -9,7 +9,7 @@ import itertools
 from utils.generate_data import generate_easy_benchmark, sample_low_level_graph
 from utils.helper import get_A_high, get_S
 from utils.losses import abstraction_residual, observation_loss, intervention_loss_direct, graph_loss
-from utils.methods import hc_abs, hc_fast, hc_fast_dag, hail_mary, hail_mary_abstract, hail_mary_graph, hail_mary_graph_topo, ground_truth,hail_mary_abstract_topo, hail_mary_abstract_graph
+from utils.methods import hc_abs, hc_fast, hc_fast_dag, hail_mary, hail_mary_abstract, hail_mary_graph, hail_mary_graph_topo, ground_truth,hail_mary_abstract_topo, hail_mary_abstract_graph, hail_mary_intv, hail_mary_intv_topo
 from utils.plots import plot_matrix, plot_results, plot_assignment_raster
 
 def flip_T(T_gt, flip_prop, seed=None):
@@ -24,6 +24,8 @@ def flip_T(T_gt, flip_prop, seed=None):
 METHODS = {'hail_mary': hail_mary, 
            'hm_abstract': hail_mary_abstract, 
            'hm_graph': hail_mary_graph, 
+           'hm_intv': hail_mary_intv,
+           'hm_intv_topo': hail_mary_intv_topo,
            'hm_abstract_graph': hail_mary_abstract_graph,
            'hm_graph_topo': hail_mary_graph_topo, 
            'hm_abstract_topo': hail_mary_abstract_topo,
@@ -34,7 +36,7 @@ METHODS = {'hail_mary': hail_mary,
 data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
-regimes = [(50, k, range(k,55,5),['hm_abstract','hm_graph','hm_abstract_graph','hm_graph_topo','hm_abstract_topo','hc_fast']) for k in [5,15,25,35]
+regimes = [(n_low, 2, [2],['hm_abstract','hm_intv','hm_intv_topo','hm_graph_topo','hc_fast']) for n_low in [100, 200, 300, 400, 500]
             #(2,range(60,110,10),['hail_mary','hc_fast']),
             #(5,range(10,43,3),['hail_mary','hc_fast']),
             #(10,range(10,21),['hail_mary','hc_fast'])
@@ -42,8 +44,8 @@ regimes = [(50, k, range(k,55,5),['hm_abstract','hm_graph','hm_abstract_graph','
 def easy_benchmark(num_trials=10,regime_list=regimes,
                    density_list=[None],
                    blockiness_list=[None],
-                   cluster_balance_list=[None],
-                   flip_prop_list=[None],
+                   heterogeneity_list=[None],
+                   internal_density_list=[None],
                    METHODS=METHODS,
                    data_gen='standard'):
     """
@@ -58,13 +60,14 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
     results = []
     for n in range(num_trials):
         start_time = time.time()
-        for regime, density, blockiness, cluster_balance, flip_prop in itertools.product(regime_list, density_list, blockiness_list, cluster_balance_list, flip_prop_list):
+        for regime, density, blockiness, het, internal_density in itertools.product(regime_list, density_list, blockiness_list, heterogeneity_list, internal_density_list):
             n_low,n_high,k_list,method_name_list = regime
             density = density if density is not None else 0.4
             blockiness = blockiness if blockiness is not None else 0.5
-            cluster_balance = cluster_balance if cluster_balance is not None else 0.1
-            A_low, T_gt, S_gt, A_high_gt = generate_data_fn(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,cluster_balance=cluster_balance, shuffle=True, internal=False)
-            T_init = None if flip_prop is None else flip_T(T_gt, flip_prop)
+            internal_density = internal_density if internal_density is not None else 0.
+            het = het if het is not None else 0.1
+            A_low, T_gt, S_gt, A_high_gt = generate_data_fn(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False)
+            T_init = None #if flip_prop is None else flip_T(T_gt, flip_prop)
             E_low = np.linalg.inv(np.eye(n_low) - A_low)
 
             for k in k_list:
@@ -78,8 +81,9 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                                     'n_high': n_high,
                                     'k':k,
                                     'density': density,
-                                    'cluster_balance':cluster_balance,
-                                    'flip_var':flip_prop,
+                                    'blockiness':blockiness,
+                                    'heterogeneity':het,
+                                    'internal_density':internal_density,
                                     'surjective': np.mean((T_pred.sum(axis=0) > 0)),
                                     'accuracy': np.isclose(abs_residual, 0, atol=1e-6) * 1.,
                                     'obs_loss': observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
@@ -98,7 +102,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
         runtime = time.time() - start_time
         print(f"Trial {n+1}/{num_trials} complete after {runtime:.4f}s.")
     
-def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_high', col_var=None, row_var=None):
+def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_high', col_var=None, row_var=None, fixed_vars={}):
     results_dir = Path("results/sandbox")
     csv_files = [f for f in results_dir.glob("*.csv") if f.stem >= cut_off]
 
@@ -111,10 +115,10 @@ def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_hig
         results_df = pd.concat(df_list, ignore_index=True)
         print(f"Collated {len(df_list)} file(s) saved after {cut_off}. Total rows: {len(results_df)}")
     
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='accuracy', row=row_var, col=col_var)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='surjective', row=row_var, col=col_var,ylog=False)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True)
+        #plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='accuracy', row=row_var, col=col_var)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='surjective', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars)
         #plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var)
     else:
         print("No CSV files found in the directory.")
@@ -126,10 +130,11 @@ def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_hig
 
 if __name__ == '__main__':
     from pathlib import Path
-    EASY_BENCHMARK_RUN = False
+    EASY_BENCHMARK_RUN = True
     EASY_BENCHMARK_PLOT = True
 
     if EASY_BENCHMARK_RUN:
-        easy_benchmark(flip_prop_list=[None],blockiness_list=[None],num_trials=3)
+        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.1], num_trials=10)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(cut_off="20260608-180000", approaches=['hm_abstract','hm_graph','hc_fast'],x_axis='k',col_var='n_high')
+        plot_easy_benchmark(cut_off="20260611-163000", approaches=['hm_abstract','hm_intv','hm_graph_topo','hm_intv_topo','hc_fast'],x_axis='n_low',col_var=None,
+                            fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.1})
