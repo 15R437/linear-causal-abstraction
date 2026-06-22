@@ -248,7 +248,7 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
             df = df[df[c] == val]
     
     if ylog:
-        df[y_axis] += 1e-8
+        df[y_axis] += 1e-15
     
     #a grid of plots
     sns.set_theme(style="whitegrid")

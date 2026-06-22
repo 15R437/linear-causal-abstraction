@@ -20,7 +20,8 @@ loss_fn should take as input:
     A_high, A_low, A_hat, T, X
 """
 def reconstruction_loss(A_low,A_hat,**kwds):
-    return np.mean((A_low - A_hat)**2)
+    baseline = np.linalg.norm(A_low, ord='fro')
+    return np.linalg.norm((A_low - A_hat), ord='fro') / baseline
 
 def reconstruction_loss_with_data(A_hat,X, A_low,**kwds):
     """
@@ -135,8 +136,6 @@ def abstraction_residual(A_low, T, A_high, **kwds):
         diag_mask = 1.0 - np.eye(n_high)
         return (residuals * diag_mask).sum()
 
-import numpy as np
-
 def graph_loss(A_low, T, **kwds):
     n_low = A_low.shape[0]
     A_low_binary = (A_low != 0).astype(float)
@@ -160,11 +159,10 @@ def graph_loss(A_low, T, **kwds):
     diag_mask = 1.0 - np.eye(n_low)
     
     # 6. Calculate total masked mean loss
-    graph_loss = (co_assign * diag_mask * C_diff_sq).mean()
+    graph_loss = (co_assign * diag_mask * C_diff_sq).sum()
     
     return graph_loss
 
-import numpy as np
 
 def topo_loss(A_low, T, A_high, **kwargs):
     n_high = T.shape[1]

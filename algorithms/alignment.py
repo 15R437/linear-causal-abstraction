@@ -75,7 +75,10 @@ def abstraction_residual(A_low, clusters_list, c1, c2, assignment_array):
         return (residuals * diag_mask).sum()
 
 
-def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heuristic_loss],dag_learner='khan',compute_all_levels=False):
+def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heuristic_loss], compute_all_levels=False, A_low_binary=None):
+    if A_low_binary is None:
+        A_low_binary = A_low.copy()
+
     n_low = A_low.shape[0]
     E_low = np.linalg.inv(np.eye(len(A_low)) - A_low)
     clusters_list = [[i] for i in range(n_low)]
@@ -94,7 +97,7 @@ def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heur
             c1, c2 = min(c1, c2), max(c1, c2)
             temp_assignment_array = assignment_array.copy()
             temp_assignment_array[clusters_list[c2]] = c1
-            losses = [1 - int(is_consistent(A_low, clusters_list, c1, c2))] + [loss_fn(A_low=A_low,clusters_list=clusters_list,c1=c1,c2=c2,assignment_array=temp_assignment_array) 
+            losses = [1 - int(is_consistent(A_low, clusters_list, c1, c2))] + [loss_fn(A_low=A_low_binary,clusters_list=clusters_list,c1=c1,c2=c2,assignment_array=temp_assignment_array) 
                                                  for loss_fn in loss_list]
             heapq.heappush(heap, tuple(losses + [c1, c2, cluster_version[c1], cluster_version[c2]]))
             
@@ -110,11 +113,10 @@ def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heur
         if compute_all_levels or k == n_high:
             T = get_T(assignment_array)
             A_high = get_A_high(A_low=A_low, T=T)
-            A_high_dag = enforce_dag(A_high) if dag_learner == 'khan' else learn_dag(A_low, T)[0]
             S = get_S(A_low=A_low, T=T)
             S_dict[k] = S
             T_dict[k] = T
-            A_high_dict[k] = A_high_dag
+            A_high_dict[k] = A_high
 
         *losses, i, j, v_i, v_j = heapq.heappop(heap)
         if i not in active_clusters or j not in active_clusters:

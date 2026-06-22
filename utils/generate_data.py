@@ -318,7 +318,7 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg
         # Samples weights strictly between 0.3 and 0.8 (and randomly flips the sign)
         adj_structure = (random_dag(n_high,density, seed=attempt_seed) != 0).astype(float)
         signs = rng.choice([-1, 1], size=adj_structure.shape)
-        absolute_weights = rng.uniform(0.3, 0.8, size=adj_structure.shape)
+        absolute_weights = rng.uniform(0.25, 1.0, size=adj_structure.shape)
         A_high_gt = adj_structure * absolute_weights * signs
         
         try:
@@ -337,12 +337,55 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg
     
     raise RuntimeError(f"Could not find a stable model after {max_attempts} attempts.")
 
-def sample_gennorm_lingam_population_standardized(A_gt_mat, n_samples, gennorm_param, seed=None):
-    n = A_gt_mat.shape[0]
-    I = np.eye(n)
-    E = np.linalg.inv(I - A_gt_mat)
-    exogenous_data = gennorm.rvs(gennorm_param, loc=0, scale=1, size=(n_samples, n))
-    X = exogenous_data @ E
+def snr_adjustment(
+    unadjusted_A,
+    n_samples=int(1e5),
+    gennorm_param=1.8,
+    SNR=1,
+    target_var=1,
+    seed=None
+):
+
+    p = unadjusted_A.shape[0]
+    adjusted_A_gt_mat = np.zeros_like(unadjusted_A)
+
+    rng = np.random.default_rng(seed)
+
+    adjusted_eps = np.zeros((n_samples, p))
+
+    eps_unscaled = gennorm.rvs(
+        gennorm_param, loc=0.0, scale=1.0,
+        size=(n_samples, p),
+        random_state=rng
+    )
+
+    for i in range(p):
+        parents = np.where(np.abs(unadjusted_A[:, i]) > 1e-9)[0]
+
+        if len(parents) == 0:
+            # Root node
+            adjusted_eps[:,i] = np.sqrt(target_var) * eps_unscaled[:,i]
+
+        col = unadjusted_A[parents,i]
+        col_norm = np.linalg.norm(col)
+
+        if col_norm > 0:
+            adjusted_A_gt_mat[parents, i] = (
+                np.sqrt(SNR / (1 + SNR)) * col / col_norm
+            )
+
+        adjusted_eps[:,i] = np.sqrt(target_var / (1 + SNR)) * eps_unscaled[:,i]
+
+
+    return adjusted_A_gt_mat, adjusted_eps
+
+def sample_gennorm_lingam_population_standardized(A_low, n_samples, gennorm_param, snr=1, seed=None):
+    p = A_low.shape[0]
+    A, U = snr_adjustment(A_low, gennorm_param=gennorm_param, SNR=snr, n_samples=n_samples)
+    
+    E = np.linalg.inv(np.eye(p) - A)
+    #exogenous_data = gennorm.rvs(gennorm_param, loc=0, scale=1, size=(n_samples, p))
+    X = U @ E
     return X
 
 if __name__ == "__main__":
