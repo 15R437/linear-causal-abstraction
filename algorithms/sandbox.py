@@ -152,7 +152,6 @@ def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_hig
 
     
     
-    
 
 if __name__ == '__main__':
     from pathlib import Path
@@ -164,5 +163,5 @@ if __name__ == '__main__':
     if EASY_BENCHMARK_RUN:
         easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=1)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(cut_off="20260622-100000", approaches=['hm_graph_topo','hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
+        plot_easy_benchmark(cut_off="20260623-100000", approaches=['hm_graph_topo','hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
                             fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})
