@@ -512,8 +512,8 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 50 #number of low-level variables
-        n_high = 5 #number of high-level variables
+        n_low = 100 #number of low-level variables
+        n_high = 50 #number of high-level variables
         k = n_high
         density = 0.4
         internal_density = 0.

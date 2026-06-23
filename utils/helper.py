@@ -485,11 +485,8 @@ def alternating_optimisation(A_low, T_hard, dag_mask, n_iters=10, min_t=1e-3):
         
     #row_sum = np.sum(A_low,axis=1)
     #row_sum[row_sum == 0] = 1
-    start_time = time.time()
     A_low_normalised = normalize_massidda_numpy(W=A_low,T_hard=T_hard)
-    runtime = time.time() - start_time
 
-    print(f"time taken to normalise: {runtime:.4f}s.")
     
     A_high = get_A_high(T_hard, A_low_normalised)
     A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
@@ -578,7 +575,11 @@ def alternating_optimisation(A_low, T_hard, dag_mask, n_iters=10, min_t=1e-3):
         
         # SLSQP optimization with exact gradients
         t_A_high_learn = np.concatenate([t_learn,A_high_learn],axis=0)
+        start_time = time.time()
         res = minimize(objective, t_A_high_learn, method='SLSQP', tol=1e-9)
+        runtime = time.time() - start_time
+        print(f"Time taken to minimse: {runtime:.4f}s")
+        
         t_A_high_learn = res.x
         t_learn = t_A_high_learn[:len(flat_indices_to_learn)]
         A_high_learn = t_A_high_learn[len(flat_indices_to_learn):]
