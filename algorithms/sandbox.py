@@ -37,7 +37,7 @@ METHODS = {'hail_mary': hail_mary,
 data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
-regimes = [(10*n_high, n_high, [2, math.ceil(n_high/2), n_high, 5*n_high, 10*n_high],['hm_graph_topo','hm_graph','hc_fast','random']) for n_high in [5,10,15,20,30]
+regimes = [(10*n_high, n_high, list(range(2,10*n_high+2,n_high)),['hm_graph','hc_fast','random']) for n_high in [5,10,15,20,30]
             #(2,range(60,110,10),['hail_mary','hc_fast']),
             #(5,range(10,43,3),['hail_mary','hc_fast']),
             #(10,range(10,21),['hail_mary','hc_fast'])
@@ -162,7 +162,7 @@ if __name__ == '__main__':
     #cut_off_good_results = 20260618-100000
 
     if EASY_BENCHMARK_RUN:
-        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=1)
+        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=10)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(cut_off="20260622-100000", approaches=['hm_graph_topo','hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
+        plot_easy_benchmark(cut_off="20260623-170000", approaches=['hm_graph_topo','hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
                             fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})
