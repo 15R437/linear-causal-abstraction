@@ -309,7 +309,7 @@ def T_concretisation_sampling(A_high,T,internal_density=0,seed=None,heterogeneit
     
     return A_low, S_gt
 
-def sample_low_level_graph(n_high,n_low,density,T_lower=(1.,),T_upper=(1.,),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., **kwds):
+def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., **kwds):
     rng = np.random.default_rng(seed)
     internal_density = 0. if internal_density is None else internal_density
     for _ in range(max_attempts):

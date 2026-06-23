@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.sparse.csgraph import connected_components
+import scipy.sparse as sp
 import math
 import torch
 import torch.nn as nn
@@ -245,195 +246,6 @@ def regularised_surjective_init(n_low, n_high, noise_std=0.1):
     return logits
 
 
-def alternating_optimization(E_low, T_hard, num_iterations=10, max_min_ratio=10):
-    """
-    Optimizes for E_high and T using the P and K matrix construction via 
-    alternating optimization.
-    
-    Parameters:
-    -----------
-    E_low : ndarray of shape (p, p)
-        Total treatment effects matrix of the low-level SCM.
-    T_hard : ndarray of shape (p, k)
-        Binary partition matrix
-    num_iterations : int
-        Number of alternating iterations to perform.
-        
-    Returns:
-    --------
-    E_high : ndarray of shape (k, k)
-        Optimized high-level total treatment effects matrix.
-    T : ndarray of shape (p, k)
-        Optimized orthonormal block-structured abstraction matrix.
-    """
-    p,k = T_hard.shape
-    I_p = np.eye(p)
-    E_minus_I = E_low - I_p
-    pi = [np.where(T_hard[:,j] != 0)[0] for j in range(k)]
-
-    min_t = 1/(max_min_ratio * math.sqrt(p))
-
-    # 1. Precompute M_i for each high-level variable i
-    M = []
-    for i in range(k):
-        F_i = np.zeros((p, p))
-        for idx in pi[i]:
-            F_i[idx, idx] = 1.0
-        
-        # M_i = (I + F_i * (E - I))^-1 * F_i * E
-        inv_term = np.linalg.inv(I_p + F_i @ E_minus_I)
-        M_i = inv_term @ F_i @ E_low
-        M.append(M_i)
-        
-    # 2. Construct the partition embedding matrices P_j and track column offsets
-    P = []
-    offsets = [0]
-    for j in range(k):
-        indices = pi[j]
-        P_j = np.zeros((p, len(indices)))
-        for idx, val in enumerate(indices):
-            P_j[val, idx] = 1.0
-        P.append(P_j)
-        offsets.append(offsets[-1] + len(indices))
-        
-    # Initialize the joint vector v and apply block-normalization
-    v = np.ones(p)
-    for j in range(k):
-        v_j = v[offsets[j]:offsets[j+1]]
-        v[offsets[j]:offsets[j+1]] = v_j / np.linalg.norm(v_j)
-        
-    E_high = np.eye(k)
-    
-    # Alternating Optimization Loop
-    for iteration in range(num_iterations):
-        
-        # --- Step 1: Optimize E_high given v (and thus T) ---
-        T = np.zeros((p, k))
-        for j in range(k):
-            T[:, j] = P[j] @ v[offsets[j]:offsets[j+1]]
-            
-        for i in range(k):
-            denom_vec = T[:, i]
-            denominator = np.linalg.norm(denom_vec)**2
-            if denominator < 1e-9:
-                denominator = 1e-9  # Prevent division by zero
-                
-            for j in range(k):
-                if i == j:
-                    continue
-                numerator = T[:, i].T @ M[i] @ T[:, j]
-                E_high[i, j] = numerator / denominator
-                
-        # --- Step 2: Optimize T via v given E_high (Constrained Quadratic Form) ---
-        # Construct the global homogeneous system matrix K of shape (k^2 * p, p)
-        K = np.zeros((k * k * p, p))
-        row_idx = 0
-        for i in range(k):
-            for j in range(k):
-                if i == j:
-                    block = M[i] @ P[i] - E_high[i, i] * P[i]
-                    K[row_idx:row_idx+p, offsets[i]:offsets[i+1]] = block
-                else:
-                    K[row_idx:row_idx+p, offsets[j]:offsets[j+1]] = M[i] @ P[j]
-                    K[row_idx:row_idx+p, offsets[i]:offsets[i+1]] = -E_high[i, j] * P[i]
-                row_idx += p
-        
-        # Precompute the quadratic kernel matrix
-        KtK = K.T @ K
-        
-        # Define the objective function for the full vector v
-        def objective(v_vars):
-            return v_vars.T @ KtK @ v_vars
-        
-        # Construct explicit equality constraints for every independent block
-        constraints = []
-        for j in range(k):
-            start_idx = offsets[j]
-            end_idx = offsets[j+1]
-            # Use default arguments to capture the current bounds within the loop scope
-            constraints.append({
-                'type': 'eq',
-                'fun': lambda v_vars, s=start_idx, e=end_idx: np.sum(v_vars[s:e]**2) - 1.0
-            })
-        
-        # Run the constrained optimization using the current v as a true warm-start
-        from scipy.optimize import minimize, Bounds
-        bounds = Bounds(min_t,1.0)
-        res = minimize(objective, v, method='SLSQP', constraints=constraints, tol=1e-9)
-        
-        # Update v with the constrained solution
-        v = res.x
-                
-    # Final reconstruction of the structural matrix T
-    T_final = np.zeros((p, k))
-    for j in range(k):
-        T_final[:, j] = P[j] @ v[offsets[j]:offsets[j+1]]
-        
-    return E_high, T_final
-
-def alternating_optimisation_old(A_low, T_hard, dag_mask, n_iters=10, min_t= 1e-3):
-    p,k = T_hard.shape
-    row, col = np.nonzero(T_hard)
-    T_hard[row, col] = 1
-    cluster_sizes = np.sum(T_hard,axis=0)
-    clusters = [np.nonzero(T_hard[:,i])[0] for i in range(k)]
-    offset = [0]
-    for N in cluster_sizes:
-        offset.append(offset[-1] + int(N))
-
-    dagify = lambda A, dag_mask: A * dag_mask if dag_mask is not None else enforce_dag(A)
-
-    t_vec = np.sum(T_hard/np.linalg.norm(T_hard,axis=0),axis=1)
-    
-    for _ in range(n_iters):
-        T = np.zeros((p,k))
-        for j in range(k):
-            T[clusters[j],j] = t_vec[clusters[j]]
-
-        A_high = dagify(A = get_A_high(T, A_low), dag_mask=dag_mask)
-        K = np.zeros((p*k,p))
-        global_row = 0
-        for i in range(k):
-            N_i = int(cluster_sizes[i])
-            for j in range(k):
-                N_j = int(cluster_sizes[j])
-                A_ij = A_low[np.ix_(clusters[i],clusters[j])]
-                I_j = np.eye(N_j)
-                A_jj = A_low[np.ix_(clusters[j],clusters[j])]
-                M =  A_ij @ np.linalg.inv(I_j - A_jj)
-
-                K[global_row: global_row + N_i, offset[j]: offset[j] + N_j] += M
-                K[global_row: global_row + N_i, offset[i]: offset[i] + N_i] += -A_high[i,j] * np.eye(N_i)
-
-                global_row += N_i
-        KtK = K.T @ K
-
-        def objective(t_vec):
-            return t_vec.T @ KtK @ t_vec
-        
-        # Construct explicit equality constraints for every independent block
-        constraints = []
-        for j in range(k):
-            constraints.append({
-                'type': 'eq',
-                'fun': lambda t_vec, idx=j : np.sum(t_vec[clusters[idx]]**2) - 1.0
-            })
-        
-        # Run the constrained optimization using the current v as a true warm-start
-        from scipy.optimize import minimize, Bounds
-        #bounds = Bounds(min_t,1.0)
-        res = minimize(objective, t_vec, method='SLSQP', constraints=constraints, tol=1e-9)
-        t_vec = res.x
-    
-    T_final = np.zeros((p,k))
-    for j in range(k):
-        T_final[clusters[j],j] = t_vec[clusters[j]]
-
-    A_high_final = dagify(A = get_A_high(T_final, A_low), dag_mask=dag_mask)
-    
-    return A_high_final, T_final
-
-
 def find_sinks_modulo_undirected_connected(A_high):
     """
     Finds the sink nodes of a DAG and groups them based on whether 
@@ -470,144 +282,6 @@ def find_sinks_modulo_undirected_connected(A_high):
         grouped_sinks[component_label].append(idx)
         
     return list(grouped_sinks.values())
-
-def alternating_optimisation(A_low, T_hard, dag_mask, n_iters=10, min_t=1e-3):
-    row, col = np.nonzero(T_hard)
-    T_hard[row, col] = 1
-    p, k = T_hard.shape
-    
-    # 1. Precompute static cluster properties
-    cluster_sizes = np.sum(T_hard, axis=0).astype(int)
-    clusters = [np.nonzero(T_hard[:, i])[0] for i in range(k)]
-    offset = [0]
-    for N in cluster_sizes:
-        offset.append(offset[-1] + N)
-        
-    #row_sum = np.sum(A_low,axis=1)
-    #row_sum[row_sum == 0] = 1
-    A_low_normalised = normalize_massidda_numpy(W=A_low,T_hard=T_hard)
-
-    
-    A_high = get_A_high(T_hard, A_low_normalised)
-    A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
-    A_high_mask = (A_high != 0) * 1.
-
-    sink_indices_list = find_sinks_modulo_undirected_connected(A_high)
-    sink_indices = sorted([l[0] for l in sink_indices_list])
-
-    A_high_code = A_high_mask.copy()
-    A_high_code[:,sink_indices] = -1
-    A_high_code *= A_high_mask
-    A_high_code = A_high_code.reshape(-1) # 0: no edge, 1: edge weight to be learnt and -1: fixed edge weight
-
-    A_high_indices_to_learn = np.where(A_high_code == 1)[0]
-    A_high_learn = np.ones_like(A_high_indices_to_learn)
-
-    A_high_sink = np.zeros((k,k))
-    A_high_sink[:,sink_indices] = np.ones((k,len(sink_indices)))
-    A_high_sink *= A_high_mask
-
-    def clst_to_flat_idx(high_idx):
-        indices = [offset[high_idx] + i for i in range(cluster_sizes[high_idx])]
-        return indices
-
-    flat_sink_indices = [item for high_idx in sink_indices for item in clst_to_flat_idx(high_idx)]
-    
-    t_sink = np.zeros(p)
-    t_sink[flat_sink_indices] = 1
-    flat_indices_to_learn = np.where(t_sink == 0)[0]
-    t_learn = np.ones(len(flat_indices_to_learn))
-
-    if len(flat_indices_to_learn) == 0:
-        # All high-level variables are sinks and A_high = 0
-        return A_high, T_hard
-    
-
-    # Precompute indexing vectors for vectorizing T matrix construction
-    T_rows = np.concatenate(clusters)
-    T_cols = np.repeat(np.arange(k), cluster_sizes)
-    
-    # 2. Precompute static components of Matrix K
-    K_static = np.zeros((p * k, p))
-    inv_I_A = [np.linalg.inv(np.eye(cluster_sizes[j]) - A_low[np.ix_(clusters[j], clusters[j])]) for j in range(k)]
-    
-    # Track slices for dynamic updates to avoid nested loops later
-    global_row = 0
-    dynamic_slices = []
-    
-    for i in range(k):
-        N_i = cluster_sizes[i]
-        for j in range(k):
-            N_j = cluster_sizes[j]
-            A_ij = A_low[np.ix_(clusters[i], clusters[j])]
-            M = A_ij @ inv_I_A[j]
-            
-            K_static[global_row : global_row + N_i, offset[j] : offset[j] + N_j] = M
-            dynamic_slices.append((global_row, global_row + N_i, offset[i], offset[i] + N_i, i, j))
-            global_row += N_i
-
-    # 4. Alternating Optimisation Loop
-    for _ in range(n_iters):
-
-        # Analytical objective and Jacobian functions
-        def objective(t_A_high_learn):
-            t_learn = t_A_high_learn[:len(flat_indices_to_learn)]
-            A_high_learn = t_A_high_learn[len(flat_indices_to_learn):]
-
-            A_high = np.zeros(k**2)
-            A_high[A_high_indices_to_learn] = A_high_learn
-            A_high = A_high.reshape(k,k) + A_high_sink
-
-            K = K_static.copy()
-            for r_start, r_end, c_start, c_end, i, j in dynamic_slices:
-                val = A_high[i, j]
-                if val != 0.0:
-                    # Direct diagonal subtraction bypassing np.eye allocation overhead
-                    diag_indices = np.arange(r_end - r_start)
-                    K[r_start + diag_indices, c_start + diag_indices] -= val
-                    
-            KtK = K.T @ K
-
-            t_whole = t_sink.copy()
-            t_whole[flat_indices_to_learn] = t_learn
-            return t_whole.T @ KtK @ t_whole
-        
-        
-        # SLSQP optimization with exact gradients
-        t_A_high_learn = np.concatenate([t_learn,A_high_learn],axis=0)
-        start_time = time.time()
-        res = minimize(objective, t_A_high_learn, method='SLSQP', tol=1e-9)
-        runtime = time.time() - start_time
-        print(f"Time taken to minimse: {runtime:.4f}s")
-        
-        t_A_high_learn = res.x
-        t_learn = t_A_high_learn[:len(flat_indices_to_learn)]
-        A_high_learn = t_A_high_learn[len(flat_indices_to_learn):]
-        A_high = np.zeros(k**2)
-        A_high[A_high_indices_to_learn] = A_high_learn
-        A_high = A_high.reshape(k,k) + A_high_sink
-
-        t_whole = t_sink.copy()
-        t_whole[flat_indices_to_learn] = t_learn
-    
-        #print(f"res.fun: {res.fun}")
-        #print(f"res.status: {res.status}")
-        #print(f"res.message: {res.message}")
-    # Final reconstruction
-    T_final = np.zeros((p, k))
-    T_final[T_rows, T_cols] = t_whole
-    
-    return A_high, T_final
-
-def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=1):
-    if E_low is None:
-        E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
-
-    A_high_pred, T_pred = alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
-    #A_high_pred = get_A_high(T=T_pred, A_low=A_low) #np.eye(model.n_high) - np.linalg.inv(E_high_pred)
-    S_pred = get_S(A_low=A_low, T=T_pred)
-    
-    return S_pred, T_pred, A_high_pred
 
 def normalize_massidda_numpy(W, T_hard, epsilon=1e-12):
     """
@@ -674,3 +348,516 @@ def normalize_massidda_numpy(W, T_hard, epsilon=1e-12):
                 W_norm[np.ix_(idx_i, idx_j)] = W_ij * scale_factors[:, None]
                 
     return W_norm
+
+def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
+    """
+    Solves the Massidda equations using a scale-free cosine similarity objective.
+    
+    Parameters:
+    - A_low: Micro-level adjacency matrix (p x p).
+    - T_hard: Initial hard clustering matrix (p x k).
+    - A_high_mask: Boolean/Binary matrix indicating valid DAG edges (k x k).
+    - sink_anchors: Dictionary mapping cluster_index (int) -> 1D numpy array of anchor values.
+    """
+    row, col = np.nonzero(T_hard)
+    T_hard = T_hard.copy()
+    T_hard[row, col] = 1
+    p, k = T_hard.shape
+
+    # 1. Precompute static cluster properties
+    cluster_sizes = np.sum(T_hard, axis=0).astype(int)
+    clusters = [np.nonzero(T_hard[:, i])[0] for i in range(k)]
+    offset = [0]
+    for N in cluster_sizes:
+        offset.append(offset[-1] + N)
+
+    inv_I_A = [np.linalg.inv(np.eye(cluster_sizes[j]) - A_low[np.ix_(clusters[j], clusters[j])]) for j in range(k)]
+
+    A_low_normalised = normalize_massidda_numpy(W=A_low,T_hard=T_hard)
+
+    
+    A_high = get_A_high(T_hard, A_low_normalised)
+    A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
+    A_high_mask = (A_high != 0) * 1.
+
+    sink_indices_list = find_sinks_modulo_undirected_connected(A_high)
+    sink_anchors = {}
+    for component in sink_indices_list:
+        sink = component[0]
+        cluster_size = np.count_nonzero(T_hard[:, sink])
+        t_sink = np.ones(cluster_size, dtype=float)
+        t_sink /= np.linalg.norm(t_sink)
+
+        sink_anchors[sink] = t_sink
+
+
+    # 2. Build Vectorized Sparse Block Operator (M_sparse)
+    edges = np.argwhere(A_high_mask == 1)
+    n_edges = len(edges)
+
+    row_to_edge = []
+    row_to_node_i = []
+    rows, cols, data = [], [], []
+
+    current_row = 0
+    for edge_idx, (i, j) in enumerate(edges):
+        N_i = cluster_sizes[i]
+        M_ij = A_low[np.ix_(clusters[i], clusters[j])] @ inv_I_A[j]
+
+        for r_idx in range(N_i):
+            orig_i = clusters[i][r_idx]
+            for c_idx in range(cluster_sizes[j]):
+                orig_j = clusters[j][c_idx]
+                rows.append(current_row + r_idx)
+                cols.append(orig_j)
+                data.append(M_ij[r_idx, c_idx])
+
+            row_to_edge.append(edge_idx)
+            row_to_node_i.append(orig_i)
+
+        current_row += N_i
+
+    M_sparse = sp.csr_matrix((data, (rows, cols)), shape=(current_row, p))
+    row_to_edge = np.array(row_to_edge, dtype=int)
+    row_to_node_i = np.array(row_to_node_i, dtype=int)
+
+    # 3. Parameter Masking (Separating learnable vs anchored variables)
+    fixed_indices = []
+    fixed_values = []
+    for sink_c, anchor_v in sink_anchors.items():
+        fixed_indices.extend(clusters[sink_c])
+        fixed_values.extend(anchor_v)
+
+    fixed_indices = np.array(fixed_indices, dtype=int)
+    fixed_values = np.array(fixed_values, dtype=float)
+
+    learn_mask = np.ones(p, dtype=bool)
+    learn_mask[fixed_indices] = False
+    learn_indices = np.where(learn_mask)[0]
+
+    def get_full_t(x):
+        t = np.zeros(p)
+        t[fixed_indices] = fixed_values
+        t[learn_indices] = x
+        return t
+
+    # 4. Objective and Gradient
+    def objective_and_grad(x):
+        t = get_full_t(x)
+
+        V = M_sparse @ t
+        U = t[row_to_node_i]
+
+        V_dot_U = np.bincount(row_to_edge, weights=V * U, minlength=n_edges)
+        V_dot_V = np.bincount(row_to_edge, weights=V * V, minlength=n_edges)
+        V_dot_V_safe = V_dot_V + eps
+
+        # Cosine mismatch penalty per edge
+        f_e = 1.0 - (V_dot_U**2) / V_dot_V_safe
+        f = np.sum(f_e)
+
+        # Gradients per row
+        V_dot_U_per_row = V_dot_U[row_to_edge]
+        V_dot_V_per_row = V_dot_V_safe[row_to_edge]
+
+        # Partial wrt U (t_i)
+        grad_U_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * V
+        grad_t_from_U = np.bincount(row_to_node_i, weights=grad_U_per_row, minlength=p)
+
+        # Partial wrt V (M_ij t_j)
+        grad_V_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * U + \
+                          2.0 * ((V_dot_U_per_row**2) / (V_dot_V_per_row**2)) * V
+        grad_t_from_V = M_sparse.T @ grad_V_per_row
+
+        grad_t_full = grad_t_from_U + grad_t_from_V
+
+        return f, grad_t_full[learn_indices]
+
+    def objective(x):
+        return objective_and_grad(x)[0]
+
+    def grad(x):
+        return objective_and_grad(x)[1]
+
+    # 5. Constraints: Unit norm for non-sink clusters
+    constraints = []
+    
+    def make_con(mask):
+        return lambda x: np.sum(x[mask]**2) - 1.0
+
+    def make_jac(mask):
+        return lambda x: 2.0 * x * mask
+
+    for c in range(k):
+        if c in sink_anchors:
+            continue
+        c_mask_in_x = np.isin(learn_indices, clusters[c])
+        constraints.append({
+            'type': 'eq',
+            'fun': make_con(c_mask_in_x),
+            'jac': make_jac(c_mask_in_x)
+        })
+
+    # Initialization: Ones on the hypersphere
+    x0 = np.ones(len(learn_indices))
+    for c in range(k):
+        if c in sink_anchors:
+            continue
+        c_mask_in_x = np.isin(learn_indices, clusters[c])
+        norm = np.linalg.norm(x0[c_mask_in_x])
+        if norm > 0:
+            x0[c_mask_in_x] /= norm
+
+    # 6. Optimization
+    start_time = time.time()
+    res = minimize(objective, x0, jac=grad, constraints=constraints, method='SLSQP', tol=1e-9, options={'maxiter': 1000})
+    runtime = time.time() - start_time
+    print(f"res.fun={res.fun:.6e}  time={runtime:.4f}s  res.message={res.message}")
+
+    # 7. Final Reconstructions
+    t_final = get_full_t(res.x)
+    A_high = np.zeros((k, k))
+    T_final = np.zeros((p, k))
+
+    for c in range(k):
+        T_final[clusters[c], c] = t_final[clusters[c]]
+    
+    A_high = get_A_high(T_final, A_low) * A_high_mask
+
+    return A_high, T_final
+
+def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-6):
+    if E_low is None:
+        E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
+
+    valid_solution = False
+    best_loss = np.inf
+    for _ in range(n_iters):
+        A_high_pred, T_pred, loss = solve_massidda_cosine_new(A_low=A_low, T_hard=T_hard, dag_mask=dag_mask) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
+        if loss < eps:
+            valid_solution = True
+            best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
+            break
+        elif loss < best_loss:
+            best_loss = loss
+            best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
+    
+    if not valid_solution:
+        print(f"Failed to find valid solution after {n_iters} attempts.")
+    S_pred = get_S(A_low=A_low, T=best_T_pred)
+    
+    return S_pred, best_T_pred, best_A_high_pred
+
+def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag_mask=None):
+    """
+    Solves the Massidda equations using a scale-free cosine similarity objective.
+    
+    Parameters:
+    - A_low: Micro-level adjacency matrix (p x p).
+    - T_hard: Initial hard clustering matrix (p x k).
+    - A_high_mask: Boolean/Binary matrix indicating valid DAG edges (k x k).
+    - sink_anchors: Dictionary mapping cluster_index (int) -> 1D numpy array of anchor values.
+    """
+    row, col = np.nonzero(T_hard)
+    T_hard = T_hard.copy()
+    T_hard[row, col] = 1
+    p, k = T_hard.shape
+    active_c = np.where((T_hard.sum(axis=0) > 0))[0]
+
+    # 1. Precompute static cluster properties
+    cluster_sizes = np.sum(T_hard, axis=0).astype(int)
+    clusters = [np.nonzero(T_hard[:, i])[0] for i in range(k)]
+    offset = [0]
+    for N in cluster_sizes:
+        offset.append(offset[-1] + N)
+
+    inv_I_A = [np.linalg.inv(np.eye(cluster_sizes[j]) - A_low[np.ix_(clusters[j], clusters[j])]) for j in range(k)]
+
+    A_low_normalised = normalize_massidda_numpy(W=A_low,T_hard=T_hard)
+
+    
+    A_high = get_A_high(T_hard, A_low_normalised)
+    A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
+    A_high_mask = (A_high != 0) * 1.
+
+    sink_indices_list = find_sinks_modulo_undirected_connected(A_high)
+    sink_anchors = [component[0] for component in sink_indices_list if component[0] in active_c]
+
+    # 2. Build Vectorized Sparse Block Operator (M_sparse)
+    edges = np.argwhere(A_high_mask == 1)
+    n_edges = len(edges)
+
+    row_to_edge = []
+    row_to_node_i = []
+    rows, cols, data = [], [], []
+
+    current_row = 0
+    for edge_idx, (i, j) in enumerate(edges):
+        N_i = cluster_sizes[i]
+        M_ij = A_low[np.ix_(clusters[i], clusters[j])] @ inv_I_A[j]
+
+        for r_idx in range(N_i):
+            orig_i = clusters[i][r_idx]
+            for c_idx in range(cluster_sizes[j]):
+                orig_j = clusters[j][c_idx]
+                rows.append(current_row + r_idx)
+                cols.append(orig_j)
+                data.append(M_ij[r_idx, c_idx])
+
+            row_to_edge.append(edge_idx)
+            row_to_node_i.append(orig_i)
+
+        current_row += N_i
+
+    M_sparse = sp.csr_matrix((data, (rows, cols)), shape=(current_row, p))
+    row_to_edge = np.array(row_to_edge, dtype=int)
+    row_to_node_i = np.array(row_to_node_i, dtype=int)
+
+    # 3. Parameter Masking (Separating learnable vs anchored variables)
+    fixed_indices = []
+    fixed_values = []
+    for sink_c in sink_anchors:
+        fixed_indices.append(clusters[sink_c][0])
+        fixed_values.append(1)
+
+    fixed_indices = np.array(fixed_indices, dtype=int)
+    fixed_values = np.array(fixed_values, dtype=float)
+
+    learn_mask = np.ones(p, dtype=bool)
+    learn_mask[fixed_indices] = False
+    learn_indices = np.where(learn_mask)[0]
+
+    def get_full_t(x):
+        t = np.zeros(p)
+        t[fixed_indices] = fixed_values
+        t[learn_indices] = x
+        return t
+
+    # 4. Objective and Gradient
+    def objective_and_grad(x):
+        t = get_full_t(x)
+
+        V = M_sparse @ t
+        U = t[row_to_node_i]
+
+        V_dot_U = np.bincount(row_to_edge, weights=V * U, minlength=n_edges)
+        V_dot_V = np.bincount(row_to_edge, weights=V * V, minlength=n_edges)
+        V_dot_V_safe = V_dot_V + eps
+
+        # Cosine mismatch penalty per edge
+        f_e = 1.0 - (V_dot_U**2) / V_dot_V_safe
+        f = np.sum(f_e)
+
+        # Gradients per row
+        V_dot_U_per_row = V_dot_U[row_to_edge]
+        V_dot_V_per_row = V_dot_V_safe[row_to_edge]
+
+        # Partial wrt U (t_i)
+        grad_U_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * V
+        grad_t_from_U = np.bincount(row_to_node_i, weights=grad_U_per_row, minlength=p)
+
+        # Partial wrt V (M_ij t_j)
+        grad_V_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * U + \
+                          2.0 * ((V_dot_U_per_row**2) / (V_dot_V_per_row**2)) * V
+        grad_t_from_V = M_sparse.T @ grad_V_per_row
+
+        grad_t_full = grad_t_from_U + grad_t_from_V
+
+        return f, grad_t_full[learn_indices]
+
+    def objective(x):
+        return objective_and_grad(x)[0]
+
+    def grad(x):
+        return objective_and_grad(x)[1]
+
+    # 5. Constraints: Unit norm for non-sink clusters
+    constraints = []
+    
+    def make_con(mask):
+        return lambda x: np.sum(x[mask]**2) - 1.0
+
+    def make_jac(mask):
+        # Returns a vector of length n_learn
+        def jacobian(x):
+            grad = np.zeros(len(learn_indices))
+            grad[mask] = 2.0 * x[mask]
+            return grad
+        return jacobian
+
+    for c in active_c:
+        c_mask_in_x = np.isin(learn_indices, clusters[c])
+        if c in sink_anchors:
+            continue
+        else:
+            constraints.append({
+                'type': 'eq',
+                'fun': make_con(c_mask_in_x),
+                'jac': make_jac(c_mask_in_x)
+            })
+
+    # Initialization: Ones on the hypersphere
+    #np.random.seed(42)
+    x0 = np.random.randn(len(learn_indices))
+    for c in active_c:
+        c_mask_in_learn = np.isin(learn_indices, clusters[c])
+        cluster_x0_slice = x0[c_mask_in_learn]
+        norm = np.linalg.norm(cluster_x0_slice)
+        
+        if norm > 0:
+            if c in sink_anchors:
+                continue
+            else:
+                x0[c_mask_in_learn] = cluster_x0_slice / norm
+
+    # 6. Optimization
+    start_time = time.time()
+    res = minimize(objective, x0, jac=grad, constraints=constraints, method='SLSQP', tol=1e-9, options={'maxiter': 1000})
+    runtime = time.time() - start_time
+    #print(f"res.fun={res.fun:.6e}  time={runtime:.4f}s  res.message={res.message}")
+
+    # 7. Final Reconstructions
+    t_final = get_full_t(res.x)
+    A_high = np.zeros((k, k))
+    T_final = np.zeros((p, k))
+
+    for c in active_c:
+        t_c = t_final[clusters[c]]
+        norm_c = np.linalg.norm(t_c)
+        if norm_c > 0:
+            t_c = t_c/norm_c
+        T_final[clusters[c], c] = t_c
+    
+    A_high = get_A_high(T_final, A_low) * A_high_mask
+
+    return A_high, T_final, res.fun
+
+def solve_massidda_cosine_unanchored(A_low, T_hard, eps=1e-12, dag_mask=None):
+    """
+    Solves the Massidda equations using a scale-free cosine similarity objective.
+    All clusters are learnable and constrained to the unit hypersphere.
+    """
+    row, col = np.nonzero(T_hard)
+    T_hard = T_hard.copy()
+    T_hard[row, col] = 1
+    p, k = T_hard.shape
+
+    # 1. Precompute static cluster properties
+    cluster_sizes = np.sum(T_hard, axis=0).astype(int)
+    clusters = [np.nonzero(T_hard[:, i])[0] for i in range(k)]
+
+    inv_I_A = [np.linalg.inv(np.eye(cluster_sizes[j]) - A_low[np.ix_(clusters[j], clusters[j])]) for j in range(k)]
+
+    A_low_normalised = normalize_massidda_numpy(W=A_low,T_hard=T_hard)
+    
+    A_high = get_A_high(T_hard, A_low_normalised)
+    A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
+    A_high_mask = (A_high != 0) * 1.
+
+    # 2. Build Vectorized Sparse Block Operator (M_sparse)
+    edges = np.argwhere(A_high_mask == 1)
+    n_edges = len(edges)
+
+    row_to_edge = []
+    row_to_node_i = []
+    rows, cols, data = [], [], []
+
+    current_row = 0
+    for edge_idx, (i, j) in enumerate(edges):
+        N_i = cluster_sizes[i]
+        M_ij = A_low[np.ix_(clusters[i], clusters[j])] @ inv_I_A[j]
+
+        for r_idx in range(N_i):
+            orig_i = clusters[i][r_idx]
+            for c_idx in range(cluster_sizes[j]):
+                orig_j = clusters[j][c_idx]
+                rows.append(current_row + r_idx)
+                cols.append(orig_j)
+                data.append(M_ij[r_idx, c_idx])
+
+            row_to_edge.append(edge_idx)
+            row_to_node_i.append(orig_i)
+
+        current_row += N_i
+
+    M_sparse = sp.csr_matrix((data, (rows, cols)), shape=(current_row, p))
+    row_to_edge = np.array(row_to_edge, dtype=int)
+    row_to_node_i = np.array(row_to_node_i, dtype=int)
+
+    # 3. Objective and Gradient (All nodes are learnable)
+    def objective_and_grad(t):
+        V = M_sparse @ t
+        U = t[row_to_node_i]
+
+        V_dot_U = np.bincount(row_to_edge, weights=V * U, minlength=n_edges)
+        V_dot_V = np.bincount(row_to_edge, weights=V * V, minlength=n_edges)
+        V_dot_V_safe = V_dot_V + eps
+
+        f_e = 1.0 - (V_dot_U**2) / V_dot_V_safe
+        f = np.sum(f_e)
+
+        V_dot_U_per_row = V_dot_U[row_to_edge]
+        V_dot_V_per_row = V_dot_V_safe[row_to_edge]
+
+        grad_U_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * V
+        grad_t_from_U = np.bincount(row_to_node_i, weights=grad_U_per_row, minlength=p)
+
+        grad_V_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * U + \
+                          2.0 * ((V_dot_U_per_row**2) / (V_dot_V_per_row**2)) * V
+        grad_t_from_V = M_sparse.T @ grad_V_per_row
+
+        grad_t_full = grad_t_from_U + grad_t_from_V
+
+        return f, grad_t_full
+
+    def objective(x):
+        return objective_and_grad(x)[0]
+
+    def grad(x):
+        return objective_and_grad(x)[1]
+
+    # 4. Constraints: Unit norm for ALL clusters
+    constraints = []
+    
+    def make_con(mask):
+        return lambda x: np.sum(x[mask]**2) - 1.0
+
+    def make_jac(mask):
+        return lambda x: 2.0 * x * mask
+
+    for c in range(k):
+        c_mask_in_x = np.zeros(p, dtype=bool)
+        c_mask_in_x[clusters[c]] = True
+        constraints.append({
+            'type': 'eq',
+            'fun': make_con(c_mask_in_x),
+            'jac': make_jac(c_mask_in_x)
+        })
+
+    # 5. Initialization: Random normal on the hypersphere
+    np.random.seed(42) # Remove or change for production
+    x0 = np.random.randn(p)
+    for c in range(k):
+        c_mask_in_x = np.zeros(p, dtype=bool)
+        c_mask_in_x[clusters[c]] = True
+        norm = np.linalg.norm(x0[c_mask_in_x])
+        if norm > 0:
+            x0[c_mask_in_x] /= norm
+
+    # 6. Optimization
+    start_time = time.time()
+    res = minimize(objective, x0, jac=grad, constraints=constraints, method='SLSQP', tol=1e-9, options={'maxiter': 1000})
+    runtime = time.time() - start_time
+    print(f"res.fun={res.fun:.6e}  time={runtime:.4f}s  res.message={res.message}")
+
+    # 7. Final Reconstructions
+    t_final = res.x
+    A_high = np.zeros((k, k))
+    T_final = np.zeros((p, k))
+
+    for c in range(k):
+        T_final[clusters[c], c] = t_final[clusters[c]]
+
+    A_high = get_A_high(T_final, A_low)
+
+    return A_high, T_final

@@ -407,7 +407,7 @@ class HailMary(nn.Module):
         else:
             topo_loss = torch.tensor(0.0, device=self.device)
 
-        recon_loss = recon_loss_tensor(self.A_low_normalised, T_hard, self.get_A_high(T_hard,self.get_S(T_hard))) # self.graph_loss(A_low_binary.T, T_soft) #self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) # 
+        recon_loss = recon_loss_tensor(self.A_low_normalised, T_soft, self.get_A_high(T_soft,self.get_S(T_soft))) # self.graph_loss(A_low_binary.T, T_soft) #self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) # 
         entropy_loss = -torch.sum(T * torch.log(T + 1e-8), dim=1).mean()
         
         top_k,_ = torch.topk(T,k=2,dim=0) 
@@ -512,14 +512,15 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 100 #number of low-level variables
-        n_high = 50 #number of high-level variables
+        n_low = 20 #number of low-level variables
+        n_high = 20 #number of high-level variables
         k = n_high
         density = 0.4
         internal_density = 0.
         blockiness = 0.1
         heteregoneity = 1.
-        A_low, T_gt_binary, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density)
+        A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density)
+        T_gt_binary = (T_gt != 0) * 1
         S_gt, T_gt, A_high_gt = process_output(T_hard=T_gt_binary, A_low=A_low)
 
     
@@ -600,7 +601,7 @@ if __name__ == "__main__":
     # Visualising Hail Mary Results
     #plot_assignment_raster(history,T_gt=T_gt)
     #animate_matrices(history['soft_mask'], title='dag_mask',cmap='Blues')
-    animate_matrices(history['T'],title='abstraction',cmap='Reds')
+    #animate_matrices(history['T'],title='abstraction',cmap='Reds')
     plot_matrix(
         matrix_list=[T_soft.cpu().detach().numpy(), T_pred],
         title_list=['Partition', 'Abstraction'],
