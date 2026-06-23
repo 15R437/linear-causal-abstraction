@@ -526,7 +526,7 @@ def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     return A_high, T_final
 
-def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-6):
+def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-6, verbose=False):
     if E_low is None:
         E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
 
@@ -543,7 +543,7 @@ def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-
             best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
     
     if not valid_solution:
-        print(f"Failed to find valid solution after {n_iters} attempts.")
+        log(f"Failed to find valid solution after {n_iters} attempts.",verbose=verbose)
     S_pred = get_S(A_low=A_low, T=best_T_pred)
     
     return S_pred, best_T_pred, best_A_high_pred

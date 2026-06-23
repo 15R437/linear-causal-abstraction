@@ -152,7 +152,6 @@ def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_hig
 
     
     
-    
 
 if __name__ == '__main__':
     from pathlib import Path
