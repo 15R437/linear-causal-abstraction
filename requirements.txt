@@ -41,7 +41,6 @@ kiwisolver==1.4.7
 lightning==2.6.5
 lightning-utilities==0.11.8
 lingam==1.12.1
-LossyAbs @ git+https://github.com/jpenn2023/LossyAbs.git@47e2f654a3a705ceb77a40d06b2ad21aaef08f03
 MarkupSafe==2.1.5
 matplotlib==3.7.5
 matplotlib-inline==0.1.7
