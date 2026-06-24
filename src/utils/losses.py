@@ -5,8 +5,8 @@ from pathlib import Path
 
 # 1. Get the directory of uca.py (/Users/issy/Projects/linear-causal-abstraction/algorithms)
 current_script_dir = Path(__file__).resolve().parent
-# 2. Go up TWO levels to reach /Users/issy/Projects/
-projects_root = current_script_dir.parent.parent
+# 2. Go up THREE levels to reach /Users/issy/Projects/
+projects_root = current_script_dir.parent.parent.parent
 # 3. Point to the folder that CONTAINS the 'unsupervised_causal_reduction' package
 target_project_dir = projects_root / 'targeted-causal-reduction-unsupervisedAbstraction'
 
@@ -19,8 +19,15 @@ from unsupervised_causal_reduction.lightning.targeted_causal_reduction import Un
 loss_fn should take as input:
     A_high, A_low, A_hat, T, X
 """
-def reconstruction_loss(A_low,A_hat,**kwds):
+def reconstruction_loss(A_low, T, A_high, **kwds):
     baseline = np.linalg.norm(A_low, ord='fro')
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        T_norm = T / np.sum(T**2, axis=0)
+    
+    T_norm = np.nan_to_num(T_norm)
+    A_hat =  T @ A_high @ T_norm.T
+
     return np.linalg.norm((A_low - A_hat), ord='fro') / baseline
 
 def reconstruction_loss_with_data(A_hat,X, A_low,**kwds):
@@ -62,6 +69,7 @@ def kl_loss(A_high,A_low,T,**kwds):
     _,results = uca_model._training_step()
 
     return results['consistency_loss'].item()
+
 
 def observation_loss(E_low,E_high,S,T,**kwds):
     lhs = S @ E_high #(I_low - A_low) @ S
@@ -119,6 +127,31 @@ def abstraction_residual(A_low, T, A_high, **kwds):
         diag_mask = 1.0 - np.eye(n_high)
         return (residuals * diag_mask).sum()
 
+def graph_loss_entropy(A_low, T, **kwds):
+    A_low_binary = (A_low != 0).astype(float)
+    
+    H_soft = np.max(A_low_binary[:, None, :] * T.T[None, :, :], axis=-1)
+    H_stable = np.clip(H_soft, 1e-6, 1.0 - 1e-6)
+
+    # 2. Derive pseudo-logits: log(p / (1-p))
+    H_logits = np.log(H_stable / (1.0 - H_stable))
+    
+    def softplus(x):
+        return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0)
+    
+    target_i = H_stable[:, None, :] 
+    logits_j = H_logits[None, :, :]  
+    
+    pairwise_ce = target_i * softplus(-logits_j) + (1.0 - target_i) * softplus(logits_j)
+    H_pen = np.sum(pairwise_ce, axis=-1)
+
+    co_assign = T @ T.T                                   
+    diag_mask = 1 - np.eye(T.shape[0])
+    mask = co_assign * diag_mask
+    graph_loss = np.mean(mask * H_pen)
+
+    return graph_loss
+
 def graph_loss(A_low, T, **kwds):
     n_low = A_low.shape[0]
     A_low_binary = (A_low != 0).astype(float)
@@ -142,7 +175,7 @@ def graph_loss(A_low, T, **kwds):
     diag_mask = 1.0 - np.eye(n_low)
     
     # 6. Calculate total masked mean loss
-    graph_loss = (co_assign * diag_mask * C_diff_sq).sum()
+    graph_loss = (co_assign * diag_mask * C_diff_sq).sum() / 2
     
     return graph_loss
 

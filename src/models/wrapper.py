@@ -1,10 +1,9 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from algorithms.gg import gumbel_grad, gg_output
-from algorithms.alignment import hierarchical_clustering, heuristic_loss, abstraction_residual
-from algorithms.hail_mary import HailMary
-from utils.helper import process_output, get_S, get_A_high, regularised_surjective_init
+from .clustering import hierarchical_clustering, heuristic_loss, abstraction_residual
+from .hail_mary import HailMary
+from src.utils.helper import process_output, regularised_surjective_init
 
 
 """Wrapper function for all the algorithms."""
@@ -32,7 +31,7 @@ def hail_mary(A_low, k, logits_init=None, num_epochs=None, **kwds):
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     if num_epochs is None:
-        num_epochs = 1000 * int(np.log(n_low*k)+1)
+        num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     model.train(num_epochs=num_epochs, verbose=False)
 
     T_hard = model.get_partition()[0].cpu().detach().numpy()
@@ -44,7 +43,7 @@ def hail_mary_abstract(A_low, k, logits_init=None, **kwds):
     A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
-    num_epochs = 1000 * int(np.log(n_low*k)+1)
+    num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     model.train(num_epochs=num_epochs, compute_abs=True, compute_graph=False, compute_topo=False, compute_intv=False, verbose=False)
 
     T_hard = model.get_partition()[0].cpu().detach().numpy()
@@ -56,7 +55,7 @@ def hail_mary_graph(A_low, k, logits_init=None,**kwds):
     A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
-    num_epochs = 1000 * int(np.log(n_low*k)+1)
+    num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False, verbose=False)
 
     T_hard = model.get_partition()[0].cpu().detach().numpy()

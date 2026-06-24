@@ -8,10 +8,10 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
-from utils.generate_data import sample_low_level_graph
-from utils.plots import visualize_causal_graph
-from utils.losses import reconstruction_loss, abstraction_loss, heuristic_cost
-from utils.helper import enforce_dag, learn_dag, get_S, get_A_high, reconstruct_adj
+from src.utils.generate_data import sample_low_level_graph
+from src.utils.plots import visualize_causal_graph
+from src.utils.losses import reconstruction_loss, abstraction_loss
+from src.utils.helper import get_S, get_A_high, reconstruct_adj
 
 def get_T(assignment_array, **kwds):
     n_low = len(assignment_array)

@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.abspath(os.getcwd()))
 import numpy as np
 from scipy.stats import gennorm
 from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_linear_concretization
-from utils.helper import get_S, get_A_high
+from src.utils.helper import get_S, get_A_high
 import numpy as np
 
 def generate_generalized_benchmark(n_low=90, n_high=3, blockiness=1.0, shuffle=True, seed=None, **kwds):

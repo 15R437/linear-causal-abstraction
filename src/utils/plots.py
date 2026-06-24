@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.abspath(os.getcwd()))
 from typing import Literal, Callable
 import matplotlib.pyplot as plt
 import torch
-from algorithms.hail_mary import HailMary
+#from src.models.hail_mary import HailMary
 import seaborn as sns
 import numpy as np
 import networkx as nx
@@ -16,7 +16,7 @@ import matplotlib.animation as animation
 from IPython.display import HTML
 import matplotlib.cm as cm
 from itertools import combinations
-from utils.helper import get_S, get_A_high, regularised_surjective_init
+from src.utils.helper import get_S, get_A_high, regularised_surjective_init
 
 def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title='Causal Abstraction Graph'):
     """
@@ -237,7 +237,7 @@ def plot_matrix(matrix_list,title_list,fig_title=''):
     fig.suptitle(fig_title,fontsize=16,fontweight='bold')
     plt.show()
 
-def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None,ylog=False,xlog=False):
+def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None,ylog=False,xlog=False, save_dir=None):
     # 1. Filter data
     df = results_df.copy()
     if approaches:
@@ -278,6 +278,11 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
         #title_str += f" grouped by {row if row else ''} {col if col else ''}"
         pass
     grid.figure.suptitle(title_str, y=0.98)
+
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        plt.savefig(f"{save_dir}/{y_axis}.png", dpi=300, bbox_inches='tight')
+        plt.close()
 
     plt.show()
 
@@ -340,7 +345,8 @@ def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.
         W = (1 - W) * flip_mask + W * (1 - flip_mask)
 
         t1_values = np.linspace(0,1,n_points)
-        model = HailMary(n_low=n_low, n_high=n_high, A_low=A_low)
+        #model = HailMary(n_low=n_low, n_high=n_high, A_low=A_low)
+        model = None
         if idx2 is None:
             losses = []
             for t1 in t1_values:

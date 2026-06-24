@@ -210,7 +210,7 @@ if __name__ == "__main__":
     from utils.helper import enforce_dag, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
-    from algorithms.alignment import get_S, get_A_high, hierarchical_clustering
+    from src.models import hierarchical_clustering
     import time
 
     # Graph Sampling

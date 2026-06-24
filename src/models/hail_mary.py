@@ -7,8 +7,6 @@ import numpy as np
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
-from utils.generate_data import sample_low_level_graph
-from utils.helper import enforce_dag, learn_dag, process_output, get_S, get_A_high
 from scipy.optimize import linear_sum_assignment
 
 def stick_breaking(w):
@@ -367,7 +365,7 @@ class HailMary(nn.Module):
             H_norm_sq = (H**2).sum(1)
             H_pen = (H_norm_sq[:,None]+ H_norm_sq[None,:]- 2*HH) # ||H[i] - H[i']||^2
         else:
-            H_soft = torch.max(A_low_binary[:, None, :] * T.T[None, :, :], dim=-1)[0] #StraightThroughSoft.apply(A_low_binary, T)
+            H_soft = torch.max(A_low_binary[:, None, :] * T.T[None, :, :], dim=-1)[0]
             H_stable = torch.clamp(H_soft, min=1e-6, max=1. - 1e-6)
         
             # 2. Derive pseudo-logits: log(p / (1-p))
@@ -407,7 +405,7 @@ class HailMary(nn.Module):
         else:
             topo_loss = torch.tensor(0.0, device=self.device)
 
-        recon_loss = recon_loss_tensor(self.A_low_normalised, T_soft, self.get_A_high(T_soft,self.get_S(T_soft))) # self.graph_loss(A_low_binary.T, T_soft) #self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) # 
+        recon_loss = recon_loss_tensor(self.A_low_normalised, T_soft, A_high) # self.graph_loss(A_low_binary.T, T_soft) #self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) # 
         entropy_loss = -torch.sum(T * torch.log(T + 1e-8), dim=1).mean()
         
         top_k,_ = torch.topk(T,k=2,dim=0) 
@@ -440,7 +438,7 @@ class HailMary(nn.Module):
     def loss_tracker(self, loss, alpha=0.1, patience=50, min_delta=1e-4):
         pass
 
-    def train(self, num_epochs, lambda_abs=1., lambda_graph=1, lambda_topo=1., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False):
+    def train(self, num_epochs, lambda_abs=1., lambda_graph=1, lambda_topo=100., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False):
         optimiser = torch.optim.Adam([{'params':[self.logits],'lr':1e-2}, {'params':[self.node_positions], 'lr':1e-2}],betas=(0.8,0.99))
         history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
         lambda_entropy = lambda_max_entropy
@@ -470,13 +468,13 @@ class HailMary(nn.Module):
         return history
 
 if __name__ == "__main__":
-    from utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
-    from utils.generate_data import generate_easy_benchmark, generate_generalized_benchmark
-    from utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, reconstruction_loss
-    from utils.helper import enforce_dag, is_dag, reconstruct_adj
+    from src.utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
+    from src.utils.generate_data import sample_low_level_graph, generate_easy_benchmark
+    from src.utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, graph_loss_entropy, reconstruction_loss
+    from src.utils.helper import process_output, get_S, get_A_high, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
-    from algorithms.alignment import get_S, get_A_high, hierarchical_clustering
+    from clustering import get_S, get_A_high, hierarchical_clustering
     import time
 
     DATA_TYPE = ['anomalies', 'easy_benchmark', 'standard_benchmark'][2]
@@ -512,12 +510,12 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 150 #number of low-level variables
-        n_high = 15 #number of high-level variables
-        k = 50
+        n_low = 120 #number of low-level variables
+        n_high = 20 #number of high-level variables
+        k = n_high
         density = 0.4
         internal_density = 0.
-        blockiness = 0.1
+        blockiness = 0.5
         heteregoneity = 1.
         A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density)
         T_gt_binary = (T_gt != 0) * 1
@@ -531,7 +529,7 @@ if __name__ == "__main__":
     E_low = np.linalg.inv(np.eye(n_low) - A_low)
     E_high_gt = np.linalg.inv(np.eye(n_high) - A_high_gt)
 
-    recon_loss_gt = reconstruction_loss(A_low=A_low,A_hat=reconstruct_adj(A_high_gt, T_gt))
+    recon_loss_gt = reconstruction_loss(A_low=A_low, T=T_gt, A_high=A_high_gt)
     graph_loss_gt = graph_loss(A_low=A_low,T=T_gt_binary)
     obs_loss_gt = observation_loss(E_low=E_low, E_high=E_high_gt, S=S_gt, T=T_gt)
     intv_loss_gt = intervention_loss(E_low=E.cpu().numpy(), E_high=E_high_gt, S=S_gt, T=T_gt)
@@ -546,7 +544,7 @@ if __name__ == "__main__":
     )
     visualize_causal_graph(A_low, A_high_gt, T_gt, S_gt, title='Ground Truth Causal Abstraction',threshold=1e-3)
 
-    #plot_probability_path(T_gt=T_gt, A_low=A_low, LOSSES={'graph_loss':graph_loss,'abstraction_residual':abstraction_residual, 'intervention_loss':intervention_loss_direct}, initial_T='surjective')
+    #plot_probability_path(T_gt=T_gt_binary, A_low=A_low, LOSSES={'recon_loss':reconstruction_loss, 'graph_loss':graph_loss_entropy}, initial_T='surjective')
     
     if n_high <= 2:
        #plot_loss_landscape(A_low=torch.from_numpy(A_low).float(), T_gt=T_gt, idx1=0, idx2=1, flip_prob=0.5)
@@ -575,7 +573,7 @@ if __name__ == "__main__":
 
     print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
     # Evaluation
-    recon_loss = reconstruction_loss(A_low=A_low, A_hat=A_recon)
+    recon_loss = reconstruction_loss(A_low=A_low, T=T_pred, A_high=A_high_pred)
     graph_loss_ = graph_loss(A_low=A_low, T=T_hard.cpu().detach().numpy())
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred)
     intv_loss = intervention_loss(E_low=E.cpu().numpy(), E_high=E_high_pred, S=S_pred, T=T_pred)
@@ -590,7 +588,7 @@ if __name__ == "__main__":
     E_high_baseline = np.linalg.inv(np.eye(k) - A_high_dict[k])
     A_recon_baseline = reconstruct_adj(A_high_baseline, T_baseline)
 
-    recon_loss = reconstruction_loss(A_low=A_low, A_hat=A_recon_baseline)
+    recon_loss = reconstruction_loss(A_low=A_low, T=T_baseline, A_high=A_high_baseline)
     graph_loss_baseline = graph_loss(A_low=A_low, T=T_dict[k])
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
     intv_loss = intervention_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
