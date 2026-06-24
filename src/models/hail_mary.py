@@ -401,11 +401,11 @@ class HailMary(nn.Module):
         if compute_topo:
             A_high = A_high * dag_mask
             M = T.T @ A_low_binary @ T # M[i,j] is the number of edges between cluster i and cluster j
-            topo_loss = torch.mean((1 - dag_mask - torch.eye(self.n_high)) * M ** 2) 
+            topo_loss = torch.sum((1 - dag_mask - torch.eye(self.n_high)) * M ** 2) 
         else:
             topo_loss = torch.tensor(0.0, device=self.device)
 
-        recon_loss = recon_loss_tensor(self.A_low_normalised, T_soft, A_high) # self.graph_loss(A_low_binary.T, T_soft) #self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) # 
+        recon_loss = self.graph_loss(A_low_binary.T, T_soft) # recon_loss_tensor(self.A_low_normalised, T_soft, A_high) # self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) # 
         entropy_loss = -torch.sum(T * torch.log(T + 1e-8), dim=1).mean()
         
         top_k,_ = torch.topk(T,k=2,dim=0) 
@@ -438,7 +438,7 @@ class HailMary(nn.Module):
     def loss_tracker(self, loss, alpha=0.1, patience=50, min_delta=1e-4):
         pass
 
-    def train(self, num_epochs, lambda_abs=1., lambda_graph=1, lambda_topo=100., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False):
+    def train(self, num_epochs, lambda_abs=1., lambda_graph=10, lambda_topo=10., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False):
         optimiser = torch.optim.Adam([{'params':[self.logits],'lr':1e-2}, {'params':[self.node_positions], 'lr':1e-2}],betas=(0.8,0.99))
         history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
         lambda_entropy = lambda_max_entropy
@@ -510,9 +510,9 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 120 #number of low-level variables
-        n_high = 20 #number of high-level variables
-        k = n_high
+        n_low = 100 #number of low-level variables
+        n_high = 10 #number of high-level variables
+        k = 2
         density = 0.4
         internal_density = 0.
         blockiness = 0.5
