@@ -526,6 +526,8 @@ def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     return A_high, T_final
 
+from utils.losses import abstraction_residual
+
 def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-6, verbose=False):
     if E_low is None:
         E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
@@ -534,6 +536,7 @@ def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-
     best_loss = np.inf
     for _ in range(n_iters):
         A_high_pred, T_pred, loss = solve_massidda_cosine_new(A_low=A_low, T_hard=T_hard, dag_mask=dag_mask) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
+        loss = abstraction_residual(A_low, T_pred, A_high_pred)
         if loss < eps:
             valid_solution = True
             best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()

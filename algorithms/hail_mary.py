@@ -384,7 +384,7 @@ class HailMary(nn.Module):
         co_assign = T @ T.T                                   # (n_low, n_low)
         diag_mask = 1 - torch.eye(self.n_low, device=T.device)
         mask = co_assign * diag_mask
-        graph_loss = (mask * H_pen).sum()
+        graph_loss = (mask * H_pen).mean()
 
         return graph_loss
 
@@ -472,7 +472,7 @@ class HailMary(nn.Module):
 if __name__ == "__main__":
     from utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
     from utils.generate_data import generate_easy_benchmark, generate_generalized_benchmark
-    from utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, topo_loss, intervention_loss_direct, reconstruction_loss
+    from utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, reconstruction_loss
     from utils.helper import enforce_dag, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
@@ -512,9 +512,9 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 20 #number of low-level variables
-        n_high = 20 #number of high-level variables
-        k = n_high
+        n_low = 150 #number of low-level variables
+        n_high = 15 #number of high-level variables
+        k = 50
         density = 0.4
         internal_density = 0.
         blockiness = 0.1
@@ -534,7 +534,7 @@ if __name__ == "__main__":
     recon_loss_gt = reconstruction_loss(A_low=A_low,A_hat=reconstruct_adj(A_high_gt, T_gt))
     graph_loss_gt = graph_loss(A_low=A_low,T=T_gt_binary)
     obs_loss_gt = observation_loss(E_low=E_low, E_high=E_high_gt, S=S_gt, T=T_gt)
-    intv_loss_gt = intervention_loss_direct(E_low=E.cpu().numpy(), E_high=E_high_gt, S=S_gt, T=T_gt)
+    intv_loss_gt = intervention_loss(E_low=E.cpu().numpy(), E_high=E_high_gt, S=S_gt, T=T_gt)
     abs_residual_gt = abstraction_residual(A_low=A_low, T=T_gt, A_high=A_high_gt)
     print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
     #print(f"T_gt: {T_gt}")
@@ -554,7 +554,7 @@ if __name__ == "__main__":
 
     # Training
     model = HailMary(n_low, n_high=k, A_low=torch.from_numpy(A_low).float(),logits_init=None)
-    num_epochs = 1000 * int(np.log(n_low*k)+1)
+    num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     start_time = time.time()
     history = model.train(num_epochs=num_epochs, verbose=True, keep_history=True)
     runtime_hm = time.time() - start_time
@@ -578,7 +578,7 @@ if __name__ == "__main__":
     recon_loss = reconstruction_loss(A_low=A_low, A_hat=A_recon)
     graph_loss_ = graph_loss(A_low=A_low, T=T_hard.cpu().detach().numpy())
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred)
-    intv_loss = intervention_loss_direct(E_low=E.cpu().numpy(), E_high=E_high_pred, S=S_pred, T=T_pred)
+    intv_loss = intervention_loss(E_low=E.cpu().numpy(), E_high=E_high_pred, S=S_pred, T=T_pred)
     abs_residual = abstraction_residual(A_low=A_low,T=T_pred, A_high=A_high_pred)
     print(f"(Hail Mary) Time: {runtime_hm:.4f}, Reconstruction Loss: {recon_loss:.4f}, Graph Loss: {graph_loss_:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_hard.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_pred)}")
 
@@ -593,7 +593,7 @@ if __name__ == "__main__":
     recon_loss = reconstruction_loss(A_low=A_low, A_hat=A_recon_baseline)
     graph_loss_baseline = graph_loss(A_low=A_low, T=T_dict[k])
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
-    intv_loss = intervention_loss_direct(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
+    intv_loss = intervention_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
     abs_residual = abstraction_residual(A_low=A_low,T=T_baseline, A_high=A_high_baseline)
     print(f"(HC) Time: {runtime_hc:.4f}, Reconstruction Loss: {recon_loss:.4f}, Graph Loss: {graph_loss_baseline:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_dict[k].sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_baseline)}")
 

@@ -11,7 +11,7 @@ import pandas as pd
 import itertools
 from utils.generate_data import generate_easy_benchmark, sample_low_level_graph, sample_gennorm_lingam_population_standardized
 from utils.helper import get_A_high, get_S, reconstruct_adj, process_output
-from utils.losses import abstraction_residual, observation_loss, intervention_loss_direct, graph_loss, reconstruction_loss, reconstruction_loss_with_data
+from utils.losses import abstraction_residual, observation_loss, intervention_loss, graph_loss, reconstruction_loss, reconstruction_loss_with_data
 from utils.methods import hc_abs, hc_fast, hc_binary, random, hail_mary, hail_mary_abstract, hail_mary_graph, hail_mary_graph_topo, ground_truth,hail_mary_abstract_topo, hail_mary_intv, hail_mary_intv_topo
 from utils.plots import plot_matrix, plot_results, plot_assignment_raster
 
@@ -37,7 +37,7 @@ METHODS = {'hail_mary': hail_mary,
 data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
-regimes = [(10*n_high, n_high, [2, math.ceil(n_high/2), n_high, 5*n_high, 10*n_high],['hm_graph_topo','hm_graph','hc_fast','random']) for n_high in [5,10,15,20,30]
+regimes = [(10*n_high, n_high, list(range(2,5*n_high+2,n_high//2)),['hm_graph','hc_fast','random']) for n_high in [15]
             #(2,range(60,110,10),['hail_mary','hc_fast']),
             #(5,range(10,43,3),['hail_mary','hc_fast']),
             #(10,range(10,21),['hail_mary','hc_fast'])
@@ -100,11 +100,12 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                                     'surjective': np.mean((np.abs(T_hard).sum(axis=0) > 0)),
                                     'marginalisation': np.mean((np.abs(T_pred).sum(axis=1) < min_t)),
                                     'accuracy': np.isclose(abs_residual, 0, atol=1e-6) * 1.,
+                                    'entropy': np.mean(-1* np.sum(T_hard * np.log(T_hard + 1e-6),axis=1)),
                                     'runtime': runtime,
                                     'memory': peak/1e6,
                                     'graph_loss':graph_loss(A_low=A_low,T=T_hard),
                                     'obs_loss': observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
-                                    'intv_loss': intervention_loss_direct(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
+                                    'intv_loss': intervention_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
                                     'abstraction_residual': abs_residual,
                                     'recon_loss': reconstruction_loss(A_low=A_low, A_hat=A_recon),
                                     'recon_loss_data':reconstruction_loss_with_data(A_low=A_low, A_hat=A_recon, X=X_test)
@@ -155,13 +156,13 @@ def plot_easy_benchmark(cut_off = "20260528-120000", approaches=[],x_axis='n_hig
 
 if __name__ == '__main__':
     from pathlib import Path
-    EASY_BENCHMARK_RUN = True
+    EASY_BENCHMARK_RUN = False
     EASY_BENCHMARK_PLOT = True
 
     #cut_off_good_results = 20260618-100000
 
     if EASY_BENCHMARK_RUN:
-        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=1)
+        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=3)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(cut_off="20260623-100000", approaches=['hm_graph_topo','hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
+        plot_easy_benchmark(cut_off="20260624-100000", approaches=['hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
                             fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})

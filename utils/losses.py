@@ -64,29 +64,12 @@ def kl_loss(A_high,A_low,T,**kwds):
     return results['consistency_loss'].item()
 
 def observation_loss(E_low,E_high,S,T,**kwds):
-    I_low = np.eye(E_low.shape[0])
-    I_high = np.eye(E_high.shape[0])
-
-    
     lhs = S @ E_high #(I_low - A_low) @ S
     rhs = E_low @ T #T @ (I_high - A_high)
     obs_loss = np.mean((lhs - rhs)**2)
     return obs_loss
 
-def intervention_loss(E_low,S,T,**kwds):
-    n_low,n_high = T.shape
-    I_low = np.eye(n_low)
-    
-    F_pi = T.T[...,None] * I_low
-    term = I_low + F_pi @ (E_low - I_low)
-
-    lhs = F_pi @ S[None,...]
-    rhs = term @ F_pi @ T[None,...]
-    intv_loss = np.mean(np.mean((lhs - rhs)**2,axis=(-2,-1)))
-
-    return intv_loss
-
-def intervention_loss_direct(E_low, E_high, S, T, **kwds):
+def intervention_loss(E_low, E_high, S, T, **kwds):
     n_low, n_high = T.shape
     I_low = np.eye(n_low)
     I_high = np.eye(n_high)
