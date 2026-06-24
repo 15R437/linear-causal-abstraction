@@ -103,7 +103,7 @@ def hail_mary_graph_topo(A_low, k, logits_init=None, **kwds):
     A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
     n_low = A_low.shape[0]
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
-    num_epochs = 1000 * int(np.log(n_low*k)+1)
+    num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False, verbose=False)
 
     T_hard = model.get_partition()[0].cpu().detach().numpy()

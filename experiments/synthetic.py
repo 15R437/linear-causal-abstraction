@@ -133,7 +133,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
         plot_easy_benchmark(timestamp=timestamp,save_dir= Path(folder/ "plots"))
 
     
-def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_graph','hc_fast','random'],x_axis='k', col_var='n_high', row_var=None, fixed_vars={}, save_dir=None):
+def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_graph','hm_graph_topo','hc_fast','random'],x_axis='k', col_var='n_high', row_var=None, fixed_vars={}, save_dir=None):
     
     assert timestamp is not None or collate_from is not None, f"Expected either timestamp or collate_from to be specified."
 
@@ -195,5 +195,5 @@ if __name__ == '__main__':
     if EASY_BENCHMARK_RUN:
         easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=3)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(collate_from="20260624-100000", approaches=['hm_graph','hm_graph_topo','hc_fast','random'],x_axis='k',col_var='n_high',
+        plot_easy_benchmark(collate_from="20260624-170000", approaches=['hm_graph','hm_graph_topo','hc_fast','random'],x_axis='k',col_var='n_high',
                             fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})
