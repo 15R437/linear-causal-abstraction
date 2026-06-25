@@ -54,6 +54,7 @@ def hail_mary_abstract(A_low, k, logits_init=None, **kwds):
 def hail_mary_graph(A_low, k, logits_init=None,**kwds):
     A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
     n_low = A_low.shape[0]
+    logits_init = torch.from_numpy(regularised_surjective_init(n_low=n_low,n_high=k)).float()
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False, verbose=False)
@@ -102,6 +103,7 @@ def hail_mary_abstract_topo(A_low, k, logits_init=None, **kwds):
 def hail_mary_graph_topo(A_low, k, logits_init=None, **kwds):
     A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
     n_low = A_low.shape[0]
+    logits_init = torch.cat([torch.zeros(n_low,k-1),torch.ones(n_low,1)],dim=1)
     model = HailMary(n_low=A_low_tensor.shape[0], n_high=k, A_low=A_low_tensor, logits_init=logits_init)
     num_epochs = 1000 * int(np.log((n_low - k)*k + 1)+1)
     model.train(num_epochs=num_epochs, compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False, verbose=False)

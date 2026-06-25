@@ -30,6 +30,20 @@ def reconstruction_loss(A_low, T, A_high, A_hat=None, **kwds):
 
     return np.linalg.norm((A_low - A_hat), ord='fro') / baseline
 
+def reconstruction_loss_binary(A_low, T, A_high, A_hat=None, eps=1e-6, **kwds):
+    baseline = np.linalg.norm(A_low, ord='fro')
+    if A_hat is None:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            T_norm = T / np.sum(T**2, axis=0)
+        
+        T_norm = np.nan_to_num(T_norm)
+        A_hat =  T @ A_high @ T_norm.T
+    
+    A_low_binary = (A_low > eps).astype(float) - (A_low < -eps).astype(float)
+    A_hat_binary = (A_hat > eps).astype(float) - (A_hat < -eps).astype(float)
+
+    return np.linalg.norm((A_low_binary - A_hat_binary), ord='fro')
+
 def reconstruction_loss_with_data(A_low, T, A_high, X, A_hat=None, **kwds):
     """
     Params
@@ -75,7 +89,6 @@ def kl_loss(A_high,A_low,T,**kwds):
     _,results = uca_model._training_step()
 
     return results['consistency_loss'].item()
-
 
 def observation_loss(E_low,E_high,S,T,**kwds):
     lhs = S @ E_high #(I_low - A_low) @ S

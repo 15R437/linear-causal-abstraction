@@ -38,7 +38,7 @@ METHODS = {'hail_mary': hail_mary,
 data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
-regimes = [(10*n_high, n_high, list(range(n_high,10*n_high+1,n_high)),['hm_graph','hm_graph_topo','hc_fast','random']) for n_high in [10]
+regimes = [(10*n_high, n_high, list(range(n_high,10*n_high,n_high)),['hm_graph','hm_graph_topo','hc_fast','random']) for n_high in [10]
 
             ]
 def easy_benchmark(num_trials=10,regime_list=regimes,

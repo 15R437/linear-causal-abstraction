@@ -7,7 +7,8 @@ import torch.nn as nn
 from typing import Literal
 from scipy.optimize import minimize
 import time
-from src.utils.losses import abstraction_residual
+from src.utils.losses import abstraction_residual, observation_loss
+from collections import deque
 
 def clusters_to_matrix(clusters,n_low):
     n_high = len({k:v for k,v in clusters.items() if k != -1})
@@ -527,15 +528,17 @@ def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     return A_high, T_final
 
-def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-6, verbose=False):
+def process_output(T_hard, A_low, E_low=None, dag=True, n_iters=10, eps=1e-6, verbose=False):
     if E_low is None:
         E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
 
     valid_solution = False
     best_loss = np.inf
     for _ in range(n_iters):
-        A_high_pred, T_pred, loss = solve_massidda_cosine_new(A_low=A_low, T_hard=T_hard, dag_mask=None) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
-        loss = abstraction_residual(A_low, T_pred, A_high_pred)
+        A_high_pred, T_pred = solve_massidda_cosine_new(A_low=A_low, T_hard=T_hard, dag=dag) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
+        S_pred = get_S(T=T_pred, A_low=A_low)
+        res = (np.eye(A_low.shape[0]) - A_low) @ S_pred - T_pred @ (np.eye(A_high_pred.shape[0]) - A_high_pred)
+        loss = np.mean(res**2)
         if loss < eps:
             valid_solution = True
             best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
@@ -550,15 +553,13 @@ def process_output(T_hard, A_low, E_low=None, dag_mask=None, n_iters=10, eps=1e-
     
     return S_pred, best_T_pred, best_A_high_pred
 
-def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag_mask=None):
+def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag=True):
     """
     Solves the Massidda equations using a scale-free cosine similarity objective.
     
     Parameters:
     - A_low: Micro-level adjacency matrix (p x p).
     - T_hard: Initial hard clustering matrix (p x k).
-    - A_high_mask: Boolean/Binary matrix indicating valid DAG edges (k x k).
-    - sink_anchors: Dictionary mapping cluster_index (int) -> 1D numpy array of anchor values.
     """
     row, col = np.nonzero(T_hard)
     T_hard = T_hard.copy()
@@ -579,7 +580,7 @@ def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     
     A_high = get_A_high(T_hard, A_low_normalised)
-    A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
+    A_high = enforce_dag(A_high) if dag else A_high
     A_high_mask = (A_high != 0) * 1.
 
     sink_indices_list = find_sinks_modulo_undirected_connected(A_high)
@@ -732,134 +733,121 @@ def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag_mask=None):
     
     A_high = get_A_high(T_final, A_low) * A_high_mask
 
-    return A_high, T_final, res.fun
-
-def solve_massidda_cosine_unanchored(A_low, T_hard, eps=1e-12, dag_mask=None):
-    """
-    Solves the Massidda equations using a scale-free cosine similarity objective.
-    All clusters are learnable and constrained to the unit hypersphere.
-    """
-    row, col = np.nonzero(T_hard)
-    T_hard = T_hard.copy()
-    T_hard[row, col] = 1
-    p, k = T_hard.shape
-
-    # 1. Precompute static cluster properties
-    cluster_sizes = np.sum(T_hard, axis=0).astype(int)
-    clusters = [np.nonzero(T_hard[:, i])[0] for i in range(k)]
-
-    inv_I_A = [np.linalg.inv(np.eye(cluster_sizes[j]) - A_low[np.ix_(clusters[j], clusters[j])]) for j in range(k)]
-
-    A_low_normalised = normalize_massidda_numpy(W=A_low,T_hard=T_hard)
-    
-    A_high = get_A_high(T_hard, A_low_normalised)
-    A_high = A_high * dag_mask if dag_mask is not None else enforce_dag(A_high)
-    A_high_mask = (A_high != 0) * 1.
-
-    # 2. Build Vectorized Sparse Block Operator (M_sparse)
-    edges = np.argwhere(A_high_mask == 1)
-    n_edges = len(edges)
-
-    row_to_edge = []
-    row_to_node_i = []
-    rows, cols, data = [], [], []
-
-    current_row = 0
-    for edge_idx, (i, j) in enumerate(edges):
-        N_i = cluster_sizes[i]
-        M_ij = A_low[np.ix_(clusters[i], clusters[j])] @ inv_I_A[j]
-
-        for r_idx in range(N_i):
-            orig_i = clusters[i][r_idx]
-            for c_idx in range(cluster_sizes[j]):
-                orig_j = clusters[j][c_idx]
-                rows.append(current_row + r_idx)
-                cols.append(orig_j)
-                data.append(M_ij[r_idx, c_idx])
-
-            row_to_edge.append(edge_idx)
-            row_to_node_i.append(orig_i)
-
-        current_row += N_i
-
-    M_sparse = sp.csr_matrix((data, (rows, cols)), shape=(current_row, p))
-    row_to_edge = np.array(row_to_edge, dtype=int)
-    row_to_node_i = np.array(row_to_node_i, dtype=int)
-
-    # 3. Objective and Gradient (All nodes are learnable)
-    def objective_and_grad(t):
-        V = M_sparse @ t
-        U = t[row_to_node_i]
-
-        V_dot_U = np.bincount(row_to_edge, weights=V * U, minlength=n_edges)
-        V_dot_V = np.bincount(row_to_edge, weights=V * V, minlength=n_edges)
-        V_dot_V_safe = V_dot_V + eps
-
-        f_e = 1.0 - (V_dot_U**2) / V_dot_V_safe
-        f = np.sum(f_e)
-
-        V_dot_U_per_row = V_dot_U[row_to_edge]
-        V_dot_V_per_row = V_dot_V_safe[row_to_edge]
-
-        grad_U_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * V
-        grad_t_from_U = np.bincount(row_to_node_i, weights=grad_U_per_row, minlength=p)
-
-        grad_V_per_row = -2.0 * (V_dot_U_per_row / V_dot_V_per_row) * U + \
-                          2.0 * ((V_dot_U_per_row**2) / (V_dot_V_per_row**2)) * V
-        grad_t_from_V = M_sparse.T @ grad_V_per_row
-
-        grad_t_full = grad_t_from_U + grad_t_from_V
-
-        return f, grad_t_full
-
-    def objective(x):
-        return objective_and_grad(x)[0]
-
-    def grad(x):
-        return objective_and_grad(x)[1]
-
-    # 4. Constraints: Unit norm for ALL clusters
-    constraints = []
-    
-    def make_con(mask):
-        return lambda x: np.sum(x[mask]**2) - 1.0
-
-    def make_jac(mask):
-        return lambda x: 2.0 * x * mask
-
-    for c in range(k):
-        c_mask_in_x = np.zeros(p, dtype=bool)
-        c_mask_in_x[clusters[c]] = True
-        constraints.append({
-            'type': 'eq',
-            'fun': make_con(c_mask_in_x),
-            'jac': make_jac(c_mask_in_x)
-        })
-
-    # 5. Initialization: Random normal on the hypersphere
-    np.random.seed(42) # Remove or change for production
-    x0 = np.random.randn(p)
-    for c in range(k):
-        c_mask_in_x = np.zeros(p, dtype=bool)
-        c_mask_in_x[clusters[c]] = True
-        norm = np.linalg.norm(x0[c_mask_in_x])
-        if norm > 0:
-            x0[c_mask_in_x] /= norm
-
-    # 6. Optimization
-    start_time = time.time()
-    res = minimize(objective, x0, jac=grad, constraints=constraints, method='SLSQP', tol=1e-9, options={'maxiter': 1000})
-    runtime = time.time() - start_time
-    print(f"res.fun={res.fun:.6e}  time={runtime:.4f}s  res.message={res.message}")
-
-    # 7. Final Reconstructions
-    t_final = res.x
-    A_high = np.zeros((k, k))
-    T_final = np.zeros((p, k))
-
-    for c in range(k):
-        T_final[clusters[c], c] = t_final[clusters[c]]
-
-    A_high = get_A_high(T_final, A_low)
-
     return A_high, T_final
+
+import numpy as np
+
+def solve_massidda_power_iteration(A_low, T_hard, max_iters=1000, eps=1e-12, dag=True):
+    """
+    Solves for the continuous abstraction parameters t_i using 
+    Block Coordinate Power Iteration.
+    
+    Parameters:
+    - A_low: Micro-level adjacency matrix (p x p).
+    - T_hard: Binary partition matrix (p x k).
+    - max_iters: Maximum number of power iterations.
+    - eps: Convergence tolerance for vector updates.
+    
+    Returns:
+    - T_final: The optimized continuous abstraction matrix (p x k).
+    """
+    p, k = T_hard.shape
+    
+    # 1. Setup clusters and active indices
+    active_c = np.where(T_hard.sum(axis=0) > 0)[0]
+    clusters = {c: np.where(T_hard[:, c] == 1)[0] for c in active_c}
+    
+    # Initialize t_c vectors uniformly on the unit hypersphere 
+    t = {}
+    for c in active_c:
+        n_c = len(clusters[c])
+        t[c] = np.ones(n_c) / np.sqrt(n_c)
+
+    # 2. Precompute Propagation Matrices: M_ij = W_ij @ (I - W_jj)^-1
+    # M_ij maps the state of cluster j to a vector proportional to cluster i
+    M = {}
+    inv_I_W = {}
+    
+    for c in active_c:
+        W_cc = A_low[np.ix_(clusters[c], clusters[c])]
+        # Add small ridge to diagonal to ensure invertibility if needed
+        I = np.eye(len(clusters[c]))
+        inv_I_W[c] = np.linalg.inv(I - W_cc)
+
+    for i in active_c:
+        for j in active_c:
+            if i == j:
+                continue
+            W_ij = A_low[np.ix_(clusters[i], clusters[j])]
+            M[(i, j)] = W_ij @ inv_I_W[j]
+
+    def get_T(t):
+        T = np.zeros((p, k))
+        for c in active_c:
+            T[clusters[c], c] = t[c]
+        return T
+
+    T_init = get_T(t)
+    A_high_init = get_A_high(A_low=A_low, T=T_init)
+    A_high_init = enforce_dag(A_high_init) if dag else A_high_init
+
+    # Perform Kahn's algorithm to find a valid topological sequence
+    in_degree = np.sum(np.abs(A_high_init) > 1e-9, axis=0)
+    queue = deque([i for i in active_c if in_degree[i] == 0])
+    topo_order = []
+    while queue:
+        node = queue.popleft()
+        topo_order.append(node)
+        
+        # Find all children of the current node
+        children = np.where(np.abs(A_high_init[node, :]) > 1e-9)[0]
+        for child in children:
+            in_degree[child] -= 1
+            if in_degree[child] == 0 and child in active_c:
+                queue.append(child)
+    
+    reverse_topo_order = topo_order[::-1]
+    iter = 0
+    #loss = abstraction_residual(A_low=A_low, T=T_init)
+    while iter < max_iters:
+        iter += 1
+        max_diff = 0.0
+        
+        for i in reverse_topo_order:
+            u = np.zeros(len(clusters[i]))
+            for j in active_c:
+                if j != i:
+                    u += M[(i, j)] @ t[j]
+                    
+            # 4. Spherical Projection
+            norm_u = np.linalg.norm(u)
+            if norm_u > 1e-12:
+                t_new = u / norm_u
+            else:
+                t_new = t[i] # Fallback for isolated clusters
+            
+            # Track maximum change for convergence
+            diff = np.linalg.norm(t_new - t[i])
+            if diff > max_diff:
+                max_diff = diff
+                
+            t[i] = t_new
+
+        T_curr = get_T(t)
+        A_high_curr = get_A_high(T=T_curr,A_low=A_low)
+        loss = abstraction_residual(A_low=A_low, T=T_curr, A_high=A_high_curr)
+        print(f"Iter {iter}/{max_iters}. Loss: {loss:.6f}, Max Diff: {max_diff}, eps: {eps}.")
+
+        # 5. Convergence Check
+        if max_diff < eps:
+            break
+        
+        
+
+    # 6. Assemble the final continuous T matrix
+    T_final = get_T(t)
+
+    A_high_final = get_A_high(T=T_final, A_low=A_low)
+    A_high_final = enforce_dag(A_high_final) if dag else A_high_final
+
+    return A_high_final, T_final

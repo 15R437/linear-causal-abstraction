@@ -213,7 +213,7 @@ class HailMary(nn.Module):
         self.register_buffer('A_low_normalised', A_low/row_sum[:,None])
 
         # One logit per (low-level var, high-level block) pair
-        logits_init = regularised_surjective_init(self.n_low, self.n_high) # torch.cat([torch.zeros(n_low,n_high-1),torch.ones(n_low,1)],dim=1) # torch.zeros(n_low,n_high) # 
+        logits_init = regularised_surjective_init(self.n_low, self.n_high) #  torch.zeros(n_low,n_high) # 
         self.logits = nn.Parameter(logits_init)
         self.node_positions = nn.Parameter(torch.linspace(0, self.n_high, self.n_high))
 
@@ -438,7 +438,7 @@ class HailMary(nn.Module):
     def loss_tracker(self, loss, alpha=0.1, patience=50, min_delta=1e-4):
         pass
 
-    def train(self, num_epochs, lambda_abs=1., lambda_graph=100, lambda_topo=10., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False):
+    def train(self, num_epochs, lambda_abs=1., lambda_graph=1, lambda_topo=1., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False):
         optimiser = torch.optim.Adam([{'params':[self.logits],'lr':1e-2}, {'params':[self.node_positions], 'lr':1e-2}],betas=(0.8,0.99))
         history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
         lambda_entropy = lambda_max_entropy
@@ -470,7 +470,7 @@ class HailMary(nn.Module):
 if __name__ == "__main__":
     from src.utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
     from src.utils.generate_data import sample_low_level_graph, generate_easy_benchmark, sample_by_noise_adjustment_any_order
-    from src.utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, graph_loss_entropy, reconstruction_loss, reconstruction_loss_with_data
+    from src.utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, graph_loss_entropy, reconstruction_loss, reconstruction_loss_with_data, reconstruction_loss_binary
     from src.utils.helper import process_output, get_S, get_A_high, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
@@ -510,18 +510,18 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 50 #number of low-level variables
-        n_high = 5 #number of high-level variables
-        k = 45
+        n_low = 120 #number of low-level variables
+        n_high = 12 #number of high-level variables
+        k = 60
         density = 0.4
         internal_density = 0.
-        blockiness = 0.5
+        blockiness = 0.8
         heteregoneity = 1.
         A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density)
         T_gt_binary = (T_gt != 0) * 1
         S_gt, T_gt, A_high_gt = process_output(T_hard=T_gt_binary, A_low=A_low)
 
-    X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=None)
+    X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=seed)
 
     # Ground Truth Visualisation & Diagnostics 
     print(f"n_low = {n_low}, n_high = {n_high}")
@@ -529,7 +529,7 @@ if __name__ == "__main__":
     E_low = np.linalg.inv(np.eye(n_low) - A_low)
     E_high_gt = np.linalg.inv(np.eye(n_high) - A_high_gt)
 
-    recon_loss_gt = reconstruction_loss(A_low=A_low, T=T_gt, A_high=A_high_gt)
+    recon_loss_gt = reconstruction_loss_binary(A_low=A_low, T=T_gt, A_high=A_high_gt)
     recon_loss_data_gt = reconstruction_loss_with_data(A_low=A_low, X=X_test, T=T_gt, A_high=A_high_gt)
     graph_loss_gt = graph_loss(A_low=A_low,T=T_gt_binary)
     obs_loss_gt = observation_loss(E_low=E_low, E_high=E_high_gt, S=S_gt, T=T_gt)
@@ -564,7 +564,7 @@ if __name__ == "__main__":
     print(f"Row-wise MinMax of T_soft: {torch.min(torch.max(T_soft,dim=1).values).item()}")
     #print(f"T_hard: {T_hard}")
 
-    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard.cpu().detach().numpy(), A_low=A_low, E_low=E_low, dag_mask=None)
+    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard.cpu().detach().numpy(), A_low=A_low, E_low=E_low)
     E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
     A_recon = reconstruct_adj(A_high_pred, T_pred)
     #print(f"A_low: {A_low}")
@@ -574,7 +574,7 @@ if __name__ == "__main__":
 
     print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Reconstruction (Data): {recon_loss_data_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
     # Evaluation
-    recon_loss = reconstruction_loss(A_low=A_low, T=T_pred, A_high=A_high_pred)
+    recon_loss = reconstruction_loss_binary(A_low=A_low, T=T_pred, A_high=A_high_pred)
     recon_loss_data = reconstruction_loss_with_data(A_low=A_low, T=T_pred, A_high=A_high_pred, X=X_test)
     graph_loss_ = graph_loss(A_low=A_low, T=T_hard.cpu().detach().numpy())
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred)
@@ -590,7 +590,7 @@ if __name__ == "__main__":
     E_high_baseline = np.linalg.inv(np.eye(k) - A_high_baseline)
     A_recon_baseline = reconstruct_adj(A_high_baseline, T_baseline)
 
-    recon_loss = reconstruction_loss(A_low=A_low, T=T_baseline, A_high=A_high_baseline)
+    recon_loss = reconstruction_loss_binary(A_low=A_low, T=T_baseline, A_high=A_high_baseline)
     recon_loss_data = reconstruction_loss_with_data(A_low=A_low, T=T_baseline, A_high=A_high_baseline, X=X_test)
     graph_loss_baseline = graph_loss(A_low=A_low, T=T_dict[k])
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
