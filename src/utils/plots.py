@@ -11,9 +11,8 @@ import numpy as np
 import networkx as nx
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
-from matplotlib.ticker import MultipleLocator,ScalarFormatter,MaxNLocator
+from matplotlib.ticker import MaxNLocator
 import matplotlib.animation as animation
-from IPython.display import HTML
 import matplotlib.cm as cm
 from itertools import combinations
 from src.utils.helper import get_S, get_A_high, regularised_surjective_init

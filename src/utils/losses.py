@@ -19,31 +19,37 @@ from unsupervised_causal_reduction.lightning.targeted_causal_reduction import Un
 loss_fn should take as input:
     A_high, A_low, A_hat, T, X
 """
-def reconstruction_loss(A_low, T, A_high, **kwds):
+def reconstruction_loss(A_low, T, A_high, A_hat=None, **kwds):
     baseline = np.linalg.norm(A_low, ord='fro')
-
-    with np.errstate(divide='ignore', invalid='ignore'):
-        T_norm = T / np.sum(T**2, axis=0)
-    
-    T_norm = np.nan_to_num(T_norm)
-    A_hat =  T @ A_high @ T_norm.T
+    if A_hat is None:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            T_norm = T / np.sum(T**2, axis=0)
+        
+        T_norm = np.nan_to_num(T_norm)
+        A_hat =  T @ A_high @ T_norm.T
 
     return np.linalg.norm((A_low - A_hat), ord='fro') / baseline
 
-def reconstruction_loss_with_data(A_hat,X, A_low,**kwds):
+def reconstruction_loss_with_data(A_low, T, A_high, X, A_hat=None, **kwds):
     """
     Params
         A_hat (np.ndarray): (n_low x n_low) adjacency matrix assumed to be upper-triangular under topological ordering
         X (np.ndarray): (n_samples x n_low) data matrix
         A_low (np.ndarray): (n_low x n_low) true adjacency matrix
     """
+    if A_hat is None:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            T_norm = T / np.sum(T**2, axis=0)
+        
+        T_norm = np.nan_to_num(T_norm)
+        A_hat =  T @ A_high @ T_norm.T
     
     I = np.eye(A_hat.shape[0])
     residual = (I-A_hat.T)@X.T #pxN matrix
     residual_oracle = (I-A_low.T)@X.T
     rmse = np.sqrt(np.mean(residual**2))
     rmse_oracle = np.sqrt(np.mean(residual_oracle**2))
-    return rmse -  rmse_oracle
+    return rmse
 
 def kl_loss(A_high,A_low,T,**kwds):
     """

@@ -438,7 +438,7 @@ class HailMary(nn.Module):
     def loss_tracker(self, loss, alpha=0.1, patience=50, min_delta=1e-4):
         pass
 
-    def train(self, num_epochs, lambda_abs=1., lambda_graph=10, lambda_topo=10., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=True, compute_intv=False):
+    def train(self, num_epochs, lambda_abs=1., lambda_graph=100, lambda_topo=10., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False):
         optimiser = torch.optim.Adam([{'params':[self.logits],'lr':1e-2}, {'params':[self.node_positions], 'lr':1e-2}],betas=(0.8,0.99))
         history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
         lambda_entropy = lambda_max_entropy
@@ -469,8 +469,8 @@ class HailMary(nn.Module):
 
 if __name__ == "__main__":
     from src.utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
-    from src.utils.generate_data import sample_low_level_graph, generate_easy_benchmark
-    from src.utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, graph_loss_entropy, reconstruction_loss
+    from src.utils.generate_data import sample_low_level_graph, generate_easy_benchmark, sample_by_noise_adjustment_any_order
+    from src.utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, graph_loss_entropy, reconstruction_loss, reconstruction_loss_with_data
     from src.utils.helper import process_output, get_S, get_A_high, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
@@ -510,9 +510,9 @@ if __name__ == "__main__":
     
     elif DATA_TYPE == 'standard_benchmark':
         seed = None #44
-        n_low = 100 #number of low-level variables
-        n_high = 10 #number of high-level variables
-        k = 2
+        n_low = 50 #number of low-level variables
+        n_high = 5 #number of high-level variables
+        k = 45
         density = 0.4
         internal_density = 0.
         blockiness = 0.5
@@ -521,7 +521,7 @@ if __name__ == "__main__":
         T_gt_binary = (T_gt != 0) * 1
         S_gt, T_gt, A_high_gt = process_output(T_hard=T_gt_binary, A_low=A_low)
 
-    
+    X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=None)
 
     # Ground Truth Visualisation & Diagnostics 
     print(f"n_low = {n_low}, n_high = {n_high}")
@@ -530,11 +530,12 @@ if __name__ == "__main__":
     E_high_gt = np.linalg.inv(np.eye(n_high) - A_high_gt)
 
     recon_loss_gt = reconstruction_loss(A_low=A_low, T=T_gt, A_high=A_high_gt)
+    recon_loss_data_gt = reconstruction_loss_with_data(A_low=A_low, X=X_test, T=T_gt, A_high=A_high_gt)
     graph_loss_gt = graph_loss(A_low=A_low,T=T_gt_binary)
     obs_loss_gt = observation_loss(E_low=E_low, E_high=E_high_gt, S=S_gt, T=T_gt)
     intv_loss_gt = intervention_loss(E_low=E.cpu().numpy(), E_high=E_high_gt, S=S_gt, T=T_gt)
     abs_residual_gt = abstraction_residual(A_low=A_low, T=T_gt, A_high=A_high_gt)
-    print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
+    print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Reconstruction (Data): {recon_loss_data_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
     #print(f"T_gt: {T_gt}")
 
     plot_matrix(
@@ -571,29 +572,31 @@ if __name__ == "__main__":
     #print(f"A_high: {A_high_pred}")
     #A_high_pred = dag_mask.cpu().detach().numpy() * A_high_pred
 
-    print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
+    print(f"(Ground Truth) Reconstruction Loss: {recon_loss_gt:.4f}, Reconstruction (Data): {recon_loss_data_gt:.4f}, Graph Loss: {graph_loss_gt:.4f},  Observation Loss: {obs_loss_gt:.4f}, Intervention Loss: {intv_loss_gt:.4f}, Abstraction Residual: {abs_residual_gt}, Is Surjective?: {T_gt_binary.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_gt)}")
     # Evaluation
     recon_loss = reconstruction_loss(A_low=A_low, T=T_pred, A_high=A_high_pred)
+    recon_loss_data = reconstruction_loss_with_data(A_low=A_low, T=T_pred, A_high=A_high_pred, X=X_test)
     graph_loss_ = graph_loss(A_low=A_low, T=T_hard.cpu().detach().numpy())
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred)
     intv_loss = intervention_loss(E_low=E.cpu().numpy(), E_high=E_high_pred, S=S_pred, T=T_pred)
     abs_residual = abstraction_residual(A_low=A_low,T=T_pred, A_high=A_high_pred)
-    print(f"(Hail Mary) Time: {runtime_hm:.4f}, Reconstruction Loss: {recon_loss:.4f}, Graph Loss: {graph_loss_:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_hard.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_pred)}")
+    print(f"(Hail Mary) Time: {runtime_hm:.4f}, Reconstruction Loss: {recon_loss:.4f}, Reconstruction (Data): {recon_loss_data:.4f}, Graph Loss: {graph_loss_:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_hard.sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_pred)}")
 
     # Hierarchical Clustering Baseline
     start_time = time.time()
     S_dict,T_dict,A_high_dict = hierarchical_clustering(A_low=A_low, n_high=k)
     runtime_hc = time.time() - start_time
     S_baseline, T_baseline, A_high_baseline = process_output(T_hard=T_dict[k], A_low=A_low, E_low=E_low)
-    E_high_baseline = np.linalg.inv(np.eye(k) - A_high_dict[k])
+    E_high_baseline = np.linalg.inv(np.eye(k) - A_high_baseline)
     A_recon_baseline = reconstruct_adj(A_high_baseline, T_baseline)
 
     recon_loss = reconstruction_loss(A_low=A_low, T=T_baseline, A_high=A_high_baseline)
+    recon_loss_data = reconstruction_loss_with_data(A_low=A_low, T=T_baseline, A_high=A_high_baseline, X=X_test)
     graph_loss_baseline = graph_loss(A_low=A_low, T=T_dict[k])
     obs_loss = observation_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
     intv_loss = intervention_loss(E_low=E_low, E_high=E_high_baseline, S=S_baseline, T=T_baseline)
     abs_residual = abstraction_residual(A_low=A_low,T=T_baseline, A_high=A_high_baseline)
-    print(f"(HC) Time: {runtime_hc:.4f}, Reconstruction Loss: {recon_loss:.4f}, Graph Loss: {graph_loss_baseline:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_dict[k].sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_baseline)}")
+    print(f"(HC) Time: {runtime_hc:.4f}, Reconstruction Loss: {recon_loss:.4f}, Reconstruction (Data): {recon_loss_data:.4f}, Graph Loss: {graph_loss_baseline:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_dict[k].sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_baseline)}")
 
     
     # Visualising Hail Mary Results
@@ -601,14 +604,15 @@ if __name__ == "__main__":
     #animate_matrices(history['soft_mask'], title='dag_mask',cmap='Blues')
     #animate_matrices(history['T'],title='abstraction',cmap='Reds')
     plot_matrix(
-        matrix_list=[T_soft.cpu().detach().numpy(), T_pred],
-        title_list=['Partition', 'Abstraction'],
-        fig_title='Learned Matrices'
+        matrix_list=[T_soft.cpu().detach().numpy(), T_dict[k]],
+        title_list=['HM', 'HC'],
+        fig_title='Partition Matrix'
     )
-    visualize_causal_graph(A_low, A_high_pred, T_pred, S_pred, title='Learned Causal Abstraction')
+    visualize_causal_graph(A_low, A_high_pred, T_pred, S_pred, title='HM Abstraction')
+    visualize_causal_graph(A_low, A_high_baseline, T_baseline, S_baseline, title='HC Abstraction')
     plot_matrix(
-        matrix_list=[A_low, A_recon],
-        title_list=['Ground Truth', 'Reconstruction'],
+        matrix_list=[A_low, A_recon, A_recon_baseline],
+        title_list=['Ground Truth', 'HM Reconstruction', 'HC Reconstruction'],
         fig_title='Adjacency Matrix'
     )
     #visualize_causal_graph(A_low, A_high_pred, T_pred, S_pred, title='Learned Causal Abstraction')

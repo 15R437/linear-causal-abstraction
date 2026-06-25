@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import itertools
 import yaml
-from src.utils.generate_data import generate_easy_benchmark, sample_low_level_graph, sample_gennorm_lingam_population_standardized
+from src.utils.generate_data import generate_easy_benchmark, sample_low_level_graph, sample_by_noise_adjustment_any_order
 from src.utils.helper import get_A_high, get_S, reconstruct_adj, process_output
 from src.utils.losses import abstraction_residual, observation_loss, intervention_loss, graph_loss, reconstruction_loss, reconstruction_loss_with_data
 from src.models.wrapper import hc_abs, hc_fast, hc_binary, random, hail_mary, hail_mary_abstract, hail_mary_graph, hail_mary_graph_topo, ground_truth,hail_mary_abstract_topo, hail_mary_intv, hail_mary_intv_topo
@@ -38,10 +38,8 @@ METHODS = {'hail_mary': hail_mary,
 data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
-regimes = [(10*n_high, n_high, list(range(2,5*n_high+2,n_high//2)),['hm_graph','hm_graph_topo','hc_fast','random']) for n_high in [15]
-            #(2,range(60,110,10),['hail_mary','hc_fast']),
-            #(5,range(10,43,3),['hail_mary','hc_fast']),
-            #(10,range(10,21),['hail_mary','hc_fast'])
+regimes = [(10*n_high, n_high, list(range(n_high,10*n_high+1,n_high)),['hm_graph','hm_graph_topo','hc_fast','random']) for n_high in [10]
+
             ]
 def easy_benchmark(num_trials=10,regime_list=regimes,
                    density_list=[None],
@@ -78,7 +76,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
             A_low, T_gt, S_gt, A_high_gt = generate_data_fn(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False)
             T_init = None #if flip_prop is None else flip_T(T_gt, flip_prop)
             E_low = np.linalg.inv(np.eye(n_low) - A_low)
-            X_test = sample_gennorm_lingam_population_standardized(A_low,n_samples=10000,gennorm_param=1.2,seed=None)
+            X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=None)
 
             for k in k_list:
                 for method_name in method_name_list:
@@ -115,8 +113,8 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                                     'obs_loss': observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
                                     'intv_loss': intervention_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
                                     'abstraction_residual': abs_residual,
-                                    'recon_loss': reconstruction_loss(A_low=A_low, T=T_pred, A_high=A_high_pred),
-                                    'recon_loss_data':reconstruction_loss_with_data(A_low=A_low, A_hat=A_recon, X=X_test)
+                                    'recon_loss': reconstruction_loss(A_low=A_low, T=T_pred, A_high=A_high_pred, A_hat=A_recon),
+                                    'recon_loss_data':reconstruction_loss_with_data(A_low=A_low, A_high=A_high_pred, A_hat=A_recon, X=X_test, T=T_pred)
                                     }]
                     results.extend(new_result)
                     df_batch = pd.DataFrame(new_result)
@@ -172,6 +170,7 @@ def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, appr
         plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='runtime', row=row_var, col=col_var, ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
         plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='memory', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
         plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss_data', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
         plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
         plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
         plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
@@ -188,7 +187,7 @@ def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, appr
 if __name__ == '__main__':
     from pathlib import Path
     EASY_BENCHMARK_RUN = True
-    EASY_BENCHMARK_PLOT = True
+    EASY_BENCHMARK_PLOT = False
 
     #cut_off_good_results = 20260618-100000
 

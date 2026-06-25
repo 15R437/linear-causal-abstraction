@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 import numpy as np
+from collections import deque
 from scipy.stats import gennorm
 from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_linear_concretization
 from src.utils.helper import get_S, get_A_high
@@ -386,6 +387,66 @@ def sample_gennorm_lingam_population_standardized(A_low, n_samples, gennorm_para
     E = np.linalg.inv(np.eye(p) - A)
     #exogenous_data = gennorm.rvs(gennorm_param, loc=0, scale=1, size=(n_samples, p))
     X = U @ E
+    return X
+
+
+def sample_by_noise_adjustment_any_order(A_low, n_samples, SNR=1, gennorm_param=1.8, target_var=1.0, seed=None):
+    """
+    Generates data from A_low without altering its edge weights, 
+    regardless of the initial node ordering.
+    """
+    p = A_low.shape[0]
+    rng = np.random.default_rng(seed)
+    X = np.zeros((n_samples, p))
+    
+    # 1. Compute in-degrees (number of parents for each node)
+    # entry A_low[u, v] implies u -> v (u is a parent of v)
+    in_degree = np.sum(np.abs(A_low) > 1e-9, axis=0)
+    
+    # 2. Initialize queue with root nodes (in-degree == 0)
+    queue = deque([i for i in range(p) if in_degree[i] == 0])
+    topo_order = []
+    
+    # 3. Perform Kahn's algorithm to find a valid topological sequence
+    while queue:
+        node = queue.popleft()
+        topo_order.append(node)
+        
+        # Find all children of the current node
+        children = np.where(np.abs(A_low[node, :]) > 1e-9)[0]
+        for child in children:
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+                
+    if len(topo_order) != p:
+        raise ValueError("The provided A_low contains cycles. Topological sorting is impossible.")
+        
+    # 4. Generate the unscaled noise array
+    eps_unscaled = gennorm.rvs(
+        gennorm_param, loc=0.0, scale=1.0, 
+        size=(n_samples, p), random_state=rng
+    )
+    
+    # 5. Process nodes sequentially using the verified topological order
+    for i in topo_order:
+        parents = np.where(np.abs(A_low[:, i]) > 1e-9)[0]
+        
+        if len(parents) == 0:
+            # Root nodes use the default target variance
+            X[:, i] = np.sqrt(target_var) * eps_unscaled[:, i]
+        else:
+            # Parents are guaranteed to be fully computed already due to topo_order
+            signal = X[:, parents] @ A_low[parents, i]
+            var_signal = np.var(signal)
+            
+            if var_signal > 1e-9:
+                var_noise = var_signal / SNR
+            else:
+                var_noise = target_var
+                
+            X[:, i] = signal + np.sqrt(var_noise) * eps_unscaled[:, i]
+            
     return X
 
 if __name__ == "__main__":
