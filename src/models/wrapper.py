@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from .clustering import hierarchical_clustering, heuristic_loss, abstraction_residual
 from .hail_mary import HailMary
 from src.utils.helper import process_output, regularised_surjective_init
+from .hm_iter import HailMaryIter
 
 
 """Wrapper function for all the algorithms."""
@@ -25,6 +26,14 @@ def random(A_low, k, **kwds):
 
     dag_mask = None
     return T_hard, dag_mask
+
+def hm_iter(A_low, k, **kwds):
+    A_low_tensor = torch.from_numpy(A_low).to(torch.float32)
+    HM = HailMaryIter(A_low=A_low_tensor)
+    HM.train(target_k=k)
+    T_hard = HM.T.cpu().detach().numpy()
+
+    return T_hard, None
 
 def hail_mary(A_low, k, logits_init=None, num_epochs=None, **kwds):
     A_low_tensor = torch.from_numpy(A_low).to(torch.float32)

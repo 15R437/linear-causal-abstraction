@@ -23,10 +23,11 @@ def reconstruction_loss(A_low, T, A_high, A_hat=None, **kwds):
     baseline = np.linalg.norm(A_low, ord='fro')
     if A_hat is None:
         with np.errstate(divide='ignore', invalid='ignore'):
-            T_norm = T / np.sum(T**2, axis=0)
-        
+            # Must use absolute sum (L1) along axis=0 to split weights evenly
+            T_norm = T / np.sum(np.abs(T), axis=0)
+
         T_norm = np.nan_to_num(T_norm)
-        A_hat =  T @ A_high @ T_norm.T
+        A_hat = T @ A_high @ T_norm.T
 
     return np.linalg.norm((A_low - A_hat), ord='fro') / baseline
 
@@ -34,10 +35,11 @@ def reconstruction_loss_binary(A_low, T, A_high, A_hat=None, eps=1e-6, **kwds):
     baseline = np.linalg.norm(A_low, ord='fro')
     if A_hat is None:
         with np.errstate(divide='ignore', invalid='ignore'):
-            T_norm = T / np.sum(T**2, axis=0)
-        
+            # Must use absolute sum (L1) along axis=0 to split weights evenly
+            T_norm = T / np.sum(np.abs(T), axis=0)
+
         T_norm = np.nan_to_num(T_norm)
-        A_hat =  T @ A_high @ T_norm.T
+        A_hat = T @ A_high @ T_norm.T
     
     A_low_binary = (A_low > eps).astype(float) - (A_low < -eps).astype(float)
     A_hat_binary = (A_hat > eps).astype(float) - (A_hat < -eps).astype(float)
@@ -53,10 +55,11 @@ def reconstruction_loss_with_data(A_low, T, A_high, X, A_hat=None, **kwds):
     """
     if A_hat is None:
         with np.errstate(divide='ignore', invalid='ignore'):
-            T_norm = T / np.sum(T**2, axis=0)
-        
+            # Must use absolute sum (L1) along axis=0 to split weights evenly
+            T_norm = T / np.sum(np.abs(T), axis=0)
+
         T_norm = np.nan_to_num(T_norm)
-        A_hat =  T @ A_high @ T_norm.T
+        A_hat = T @ A_high @ T_norm.T
     
     I = np.eye(A_hat.shape[0])
     residual = (I-A_hat.T)@X.T #pxN matrix
@@ -171,12 +174,12 @@ def graph_loss_entropy(A_low, T, **kwds):
 
     return graph_loss
 
-def graph_loss(A_low, T, **kwds):
+def graph_loss(A_low, T_hard, **kwds):
     n_low = A_low.shape[0]
     A_low_binary = (A_low != 0).astype(float)
     
     # H[i,j] = number of edges between low-level node i and high-level cluster j
-    H = A_low_binary @ T 
+    H = A_low_binary @ T_hard 
     
     # 2. Replicate the forward pass of: 1 - relu(1 - H)
     # This clamps the upper bound of H to 1.0 without affecting values below it
@@ -189,8 +192,7 @@ def graph_loss(A_low, T, **kwds):
     CC_norm = (C ** 2).sum(axis=1)
     C_diff_sq = CC_norm[:, None] + CC_norm[None, :] - 2 * CC  
     
-    # 5. Continuous co-assignment matrix
-    co_assign = T @ T.T                                   
+    co_assign = T_hard @ T_hard.T                                   
     diag_mask = 1.0 - np.eye(n_low)
     
     # 6. Calculate total masked mean loss

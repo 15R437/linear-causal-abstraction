@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.getcwd()))
 
+from pathlib import Path
 import tracemalloc
 import math
 import time
@@ -84,14 +85,14 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
 
                     tracemalloc.start()
                     method_start = time.perf_counter()
-                    T_hard, dag_mask = method_fn(A_low=A_low, E_low=E_low, k=k, logits_init=T_init, T_gt=T_gt)
+                    T_hard, dag_mask = method_fn(A_low=A_low, k=k)
                     runtime = time.perf_counter() - method_start
                     _, peak = tracemalloc.get_traced_memory()
                     tracemalloc.stop()
 
                     min_t = 1/(5 * math.sqrt(n_low))
                     
-                    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low, E_low=E_low, dag_mask=dag_mask)
+                    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low, E_low=E_low)
                     A_recon = reconstruct_adj(A_high=A_high_pred,T=T_pred)
                     E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
                     abs_residual = abstraction_residual(A_low=A_low,T=T_pred,A_high=A_high_pred)
@@ -109,7 +110,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                                     'entropy': np.mean(-1* np.sum(T_hard * np.log(T_hard + 1e-6),axis=1)),
                                     'runtime': runtime,
                                     'memory': peak/1e6,
-                                    'graph_loss':graph_loss(A_low=A_low,T=T_hard),
+                                    'graph_loss':graph_loss(A_low=A_low,T_hard=T_hard),
                                     'obs_loss': observation_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
                                     'intv_loss': intervention_loss(E_low=E_low, E_high=E_high_pred, S=S_pred, T=T_pred),
                                     'abstraction_residual': abs_residual,
@@ -185,14 +186,13 @@ def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, appr
     
 
 if __name__ == '__main__':
-    from pathlib import Path
-    EASY_BENCHMARK_RUN = True
-    EASY_BENCHMARK_PLOT = False
+    EASY_BENCHMARK_RUN = False
+    EASY_BENCHMARK_PLOT = True
 
     #cut_off_good_results = 20260618-100000
 
     if EASY_BENCHMARK_RUN:
-        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=3)
+        easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=10)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(collate_from="20260624-170000", approaches=['hm_graph','hm_graph_topo','hc_fast','random'],x_axis='k',col_var='n_high',
+        plot_easy_benchmark(collate_from="20260627-170000", approaches=['hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
                             fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})

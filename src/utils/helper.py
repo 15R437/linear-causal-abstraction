@@ -33,9 +33,10 @@ def reconstruct_adj(A_high,T):
     """
 
     with np.errstate(divide='ignore', invalid='ignore'):
-        T_norm = T / np.sum(T**2, axis=0)
-    
+        T_norm = T / np.sum(np.abs(T), axis=0)
+
     T_norm = np.nan_to_num(T_norm)
+    A_hat = T @ A_high @ T_norm.T
 
     return T @ A_high @ T_norm.T
 
@@ -88,70 +89,6 @@ def enforce_dag(A):
         return torch.tensor(A_dag, device=device, dtype=dtype)
     return A_dag
 
-class DAGTopologyMask(nn.Module):
-    def __init__(self, n_high):
-        super().__init__()
-        self.n_high = n_high
-        # Learnable, continuous positions for each macro-node
-        self.node_positions = nn.Parameter(torch.linspace(0, n_high, n_high))
-
-    def dag_mask(self,temp=1.):
-        diff = self.node_positions.unsqueeze(0) - self.node_positions.unsqueeze(1)
-        hard_mask = (diff > 0).float()
-        soft_mask = torch.sigmoid(diff/temp)
-        dag_mask = soft_mask + (hard_mask - soft_mask).detach()
-        return dag_mask, soft_mask
-
-def learn_dag(A_low, T, num_epochs=1000, min_temp=0.01, max_temp=1.0, verbose=False, keep_history=False):
-    if isinstance(A_low, np.ndarray):
-        A_low = torch.from_numpy(A_low).float()
-    if isinstance(T, np.ndarray):
-        T = torch.from_numpy(T).float()
-
-    def improved_abstraction_residual(dag_mask, A_low=A_low, T=T):
-        n_low, n_high = T.shape
-        I = torch.eye(n_low, device=T.device)
-
-        S_list = []
-        for j in range(n_high):
-            t_j = T[:, j]
-            A_jj = t_j.unsqueeze(1) * A_low * t_j.unsqueeze(0)
-            s_j = torch.linalg.solve(I - A_jj, t_j)
-            S_list.append(s_j)
-        S = torch.stack(S_list, dim=1)  # (n_low, n_high)
-
-        influence_matrix = A_low @ (T * S)  # (n_low, n_high)
-
-        T_sq = T ** 2                                          # (n_low, n_high)
-        t_i_norms = T_sq.sum(dim=0).clamp(min=1e-8)                # (n_high,) effective block sizes
-        a_star = dag_mask * (T_sq.T @ influence_matrix) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
-
-        diff = influence_matrix.unsqueeze(0) - a_star.unsqueeze(1)
-        weights = T_sq.T.unsqueeze(2)                               # (n_high, n_low, 1)
-        residuals = (weights * diff ** 2).sum(dim=1) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
-
-        diag_mask = 1.0 - torch.eye(n_high, device=T.device)
-
-        return (residuals * diag_mask).sum()
-    
-    n_low, n_high = T.shape
-    learner = DAGTopologyMask(n_high)
-    optimiser = torch.optim.Adam(learner.parameters(), lr=0.001)
-    history = {'loss':[], 'dag_mask':[], 'soft_mask':[]}
-    for epoch in range(num_epochs):
-        temp = max(min_temp, max_temp * (min_temp**(epoch/num_epochs)))
-        dag_mask, soft_mask = learner.dag_mask(temp)
-        loss = improved_abstraction_residual(dag_mask)
-        loss.backward()
-        optimiser.step()
-        if epoch % (num_epochs//10) == 0 or epoch == num_epochs - 1:
-            log(f"Epoch {epoch+1}/{num_epochs}: Loss = {loss.item()}",verbose=verbose)
-        if keep_history:
-            history['loss'].append(loss.item())
-            history['dag_mask'].append(dag_mask.cpu().detach().numpy())
-            history['soft_mask'].append(soft_mask.cpu().detach().numpy())
-    
-    return learner.dag_mask()[0].cpu().detach().numpy(), history
 
 def is_dag(A):
     """
@@ -528,17 +465,17 @@ def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     return A_high, T_final
 
-def process_output(T_hard, A_low, E_low=None, dag=True, n_iters=10, eps=1e-6, verbose=False):
+def process_output(T_hard, A_low, E_low=None, dag=True, n_iters=1, eps=1e-9, verbose=False):
     if E_low is None:
         E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
 
     valid_solution = False
     best_loss = np.inf
     for _ in range(n_iters):
-        A_high_pred, T_pred = solve_massidda_cosine_new(A_low=A_low, T_hard=T_hard, dag=dag) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
-        S_pred = get_S(T=T_pred, A_low=A_low)
-        res = (np.eye(A_low.shape[0]) - A_low) @ S_pred - T_pred @ (np.eye(A_high_pred.shape[0]) - A_high_pred)
-        loss = np.mean(res**2)
+        A_high_pred, T_pred, results = fit_abstraction(A_low=A_low, T_hard=T_hard) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
+        S_pred = get_S(T=T_pred, A_low=A_low, T_hard=T_hard)
+        
+        loss = abstraction_residual(A_low, T_pred, A_high_pred) #np.mean(res**2)
         if loss < eps:
             valid_solution = True
             best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
@@ -549,7 +486,8 @@ def process_output(T_hard, A_low, E_low=None, dag=True, n_iters=10, eps=1e-6, ve
     
     if not valid_solution:
         log(f"Failed to find valid solution after {n_iters} attempts.",verbose=verbose)
-    S_pred = get_S(A_low=A_low, T=best_T_pred)
+    
+    log(f"Min T value: {np.min(np.abs(T_pred[T_pred != 0]))}.",verbose=verbose)
     
     return S_pred, best_T_pred, best_A_high_pred
 
@@ -735,119 +673,156 @@ def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag=True):
 
     return A_high, T_final
 
-import numpy as np
-
-def solve_massidda_power_iteration(A_low, T_hard, max_iters=1000, eps=1e-12, dag=True):
-    """
-    Solves for the continuous abstraction parameters t_i using 
-    Block Coordinate Power Iteration.
-    
-    Parameters:
-    - A_low: Micro-level adjacency matrix (p x p).
-    - T_hard: Binary partition matrix (p x k).
-    - max_iters: Maximum number of power iterations.
-    - eps: Convergence tolerance for vector updates.
-    
-    Returns:
-    - T_final: The optimized continuous abstraction matrix (p x k).
-    """
-    p, k = T_hard.shape
-    
-    # 1. Setup clusters and active indices
-    active_c = np.where(T_hard.sum(axis=0) > 0)[0]
-    clusters = {c: np.where(T_hard[:, c] == 1)[0] for c in active_c}
-    
-    # Initialize t_c vectors uniformly on the unit hypersphere 
-    t = {}
-    for c in active_c:
-        n_c = len(clusters[c])
-        t[c] = np.ones(n_c) / np.sqrt(n_c)
-
-    # 2. Precompute Propagation Matrices: M_ij = W_ij @ (I - W_jj)^-1
-    # M_ij maps the state of cluster j to a vector proportional to cluster i
-    M = {}
-    inv_I_W = {}
-    
-    for c in active_c:
-        W_cc = A_low[np.ix_(clusters[c], clusters[c])]
-        # Add small ridge to diagonal to ensure invertibility if needed
-        I = np.eye(len(clusters[c]))
-        inv_I_W[c] = np.linalg.inv(I - W_cc)
-
-    for i in active_c:
-        for j in active_c:
-            if i == j:
+def cluster_indices(T_hard):
+    """List of low-level node indices belonging to each cluster."""
+    K = T_hard.shape[1]
+    return [np.where(T_hard[:, k] == 1)[0] for k in range(K)]
+ 
+ 
+def high_level_mask(A_low, T_hard):
+    """Edge (i, j) exists iff some member of cluster i has a nonzero direct
+    A_low connection to some member of cluster j (i.e. i causes j)."""
+    idx = cluster_indices(T_hard)
+    k = len(idx)
+    A_high = np.zeros((k, k))
+    for i in range(k):
+        for j in range(k):
+            if i == j or len(idx[i]) == 0 or len(idx[j]) == 0:
                 continue
-            W_ij = A_low[np.ix_(clusters[i], clusters[j])]
-            M[(i, j)] = W_ij @ inv_I_W[j]
-
-    def get_T(t):
-        T = np.zeros((p, k))
-        for c in active_c:
-            T[clusters[c], c] = t[c]
-        return T
-
-    T_init = get_T(t)
-    A_high_init = get_A_high(A_low=A_low, T=T_init)
-    A_high_init = enforce_dag(A_high_init) if dag else A_high_init
-
-    # Perform Kahn's algorithm to find a valid topological sequence
-    in_degree = np.sum(np.abs(A_high_init) > 1e-9, axis=0)
-    queue = deque([i for i in active_c if in_degree[i] == 0])
-    topo_order = []
-    while queue:
-        node = queue.popleft()
-        topo_order.append(node)
-        
-        # Find all children of the current node
-        children = np.where(np.abs(A_high_init[node, :]) > 1e-9)[0]
-        for child in children:
-            in_degree[child] -= 1
-            if in_degree[child] == 0 and child in active_c:
-                queue.append(child)
+            W_ij = A_low[np.ix_(idx[i], idx[j])]
+            if not np.any(W_ij):
+                continue
+            W_jj = A_low[np.ix_(idx[j], idx[j])]
+            M_ij = W_ij @ np.linalg.inv(np.eye(len(idx[j])) - W_jj)
+            A_high[i, j] = np.linalg.norm(M_ij, "fro")
     
-    reverse_topo_order = topo_order[::-1]
-    iter = 0
-    #loss = abstraction_residual(A_low=A_low, T=T_init)
-    while iter < max_iters:
-        iter += 1
-        max_diff = 0.0
-        
-        for i in reverse_topo_order:
-            u = np.zeros(len(clusters[i]))
-            for j in active_c:
-                if j != i:
-                    u += M[(i, j)] @ t[j]
-                    
-            # 4. Spherical Projection
-            norm_u = np.linalg.norm(u)
-            if norm_u > 1e-12:
-                t_new = u / norm_u
+    A_high_dag = enforce_dag(A_high)
+    mask = (A_high_dag != 0)
+    return mask
+ 
+ 
+def reverse_topo_order(mask):
+    """Order clusters so every node appears after all of its children."""
+    K = mask.shape[0]
+    children = [np.where(mask[k, :])[0] for k in range(K)]
+    visited = [False] * K
+    order = []
+ 
+    def visit(n):
+        if visited[n]:
+            return
+        visited[n] = True
+        for c in children[n]:
+            visit(c)
+        order.append(n)
+ 
+    for k in range(K):
+        visit(k)
+    return order 
+ 
+ 
+def get_S(T, A_low, T_hard=None):
+    if T_hard is None:
+        T_hard = (T != 0).astype(int)
+    idx = cluster_indices(T_hard)
+    S = np.zeros_like(T)
+    for j in range(T.shape[1]):
+        if len(idx[j]) == 0:
+            continue
+        W_jj = A_low[np.ix_(idx[j], idx[j])]
+        S[idx[j], j] = np.linalg.solve(np.eye(len(idx[j])) - W_jj, T[idx[j], j])
+    return S
+ 
+
+ 
+def fit_abstraction(A_low, T_hard, n_restarts=10, seed=0, maxiter=5000):
+    """
+    Given fixed A_low and a binary partition T_hard, construct the continuous
+    abstraction T and A_high by optimising sink t-vectors and propagating
+    bottom-up via the Massidda equations W_ij(I-W_jj)^{-1}t_j = m_ij t_i.
+
+    Returns:
+        A_high: (n_high, n_high) abstract adjacency matrix
+        T: (n_low, n_high) continuous abstraction matrix
+        diagnostics: dict with 'penalty' (multi-child disagreement at optimum)
+    """
+    idx = cluster_indices(T_hard)
+    mask = high_level_mask(A_low, T_hard)
+    order = reverse_topo_order(mask)
+    sinks = [X for X in order if mask[X, :].sum() == 0]
+    sizes = [len(idx[X]) for X in sinks]
+    split = np.cumsum([0] + sizes)
+
+    # Precompute M[(X,c)] = W_Xc @ (I - W_cc)^{-1} once for every edge.
+    # These are constant across all optimisation iterations.
+    M_edge = {}
+    for i in order:
+        for j in np.where(mask[i, :])[0]:
+            W_jj = A_low[np.ix_(idx[j], idx[j])]
+            W_ij = A_low[np.ix_(idx[i], idx[j])]
+            M_edge[(i, int(j))] = W_ij @ np.linalg.inv(np.eye(len(idx[j])) - W_jj)
+
+    def propagate(dirs):
+        t = [None] * len(idx)
+        penalty = 0.0
+        sink_iter = iter(dirs)
+        for X in order:
+            children = np.where(mask[X, :])[0]
+            if len(children) == 0:
+                t[X] = next(sink_iter)
+                continue
+            votes = []
+            for c in children:
+                v = M_edge[(X, int(c))] @ t[c]
+                n = np.linalg.norm(v)
+                votes.append(v / n if n > 1e-12 else v)
+            if len(votes) == 1:
+                t[X] = votes[0]
             else:
-                t_new = t[i] # Fallback for isolated clusters
-            
-            # Track maximum change for convergence
-            diff = np.linalg.norm(t_new - t[i])
-            if diff > max_diff:
-                max_diff = diff
-                
-            t[i] = t_new
+                V = np.stack(votes)
+                for r in range(1, len(V)):
+                    if V[r] @ V[0] < 0:
+                        V[r] = -V[r]
+                mean_v = V.mean(axis=0)
+                n = np.linalg.norm(mean_v)
+                mean_v = mean_v / n if n > 1e-12 else mean_v
+                t[X] = mean_v
+                # ||v - (v·m)m||² = 1 - cos²(v,m) for unit vectors
+                for v in V:
+                    penalty += 1.0 - (v @ mean_v) ** 2
+        return t, penalty
 
-        T_curr = get_T(t)
-        A_high_curr = get_A_high(T=T_curr,A_low=A_low)
-        loss = abstraction_residual(A_low=A_low, T=T_curr, A_high=A_high_curr)
-        print(f"Iter {iter}/{max_iters}. Loss: {loss:.6f}, Max Diff: {max_diff}, eps: {eps}.")
+    def unpack(x):
+        dirs = []
+        for k in range(len(sinks)):
+            seg = x[split[k]:split[k + 1]]
+            n = np.linalg.norm(seg)
+            dirs.append(seg / n if n > 1e-12 else seg)
+        return dirs
 
-        # 5. Convergence Check
-        if max_diff < eps:
-            break
-        
-        
+    n_params = int(split[-1]) if len(split) else 0
+    if n_params == 0:
+        best_x, best_val = np.array([]), 0.0
+    else:
+        rng = np.random.RandomState(seed)
+        best_x, best_val = None, np.inf
+        for _ in range(n_restarts):
+            x0 = rng.randn(n_params)
+            res = minimize(lambda x: propagate(unpack(x))[1], x0,
+                           method="SLSQP", tol=1e-9, options={"maxiter": maxiter})
+            if res.fun < best_val:
+                best_val, best_x = res.fun, res.x
 
-    # 6. Assemble the final continuous T matrix
-    T_final = get_T(t)
+    t, penalty = propagate(unpack(best_x) if n_params > 0 else [])
 
-    A_high_final = get_A_high(T=T_final, A_low=A_low)
-    A_high_final = enforce_dag(A_high_final) if dag else A_high_final
+    p, K = A_low.shape[0], len(idx)
+    T = np.zeros((p, K))
+    A_high = np.zeros((K, K))
+    for X in range(K):
+        if t[X] is not None and len(idx[X]) > 0:
+            T[idx[X], X] = t[X]
+        for c in np.where(mask[X, :])[0]:
+            vote_unnorm = M_edge[(X, int(c))] @ t[c]
+            A_high[X, int(c)] = t[X] @ vote_unnorm  # t[X] is unit-norm so denominator = 1
 
-    return A_high_final, T_final
+    return A_high, T, {"penalty": penalty, "n_sinks": len(sinks)}

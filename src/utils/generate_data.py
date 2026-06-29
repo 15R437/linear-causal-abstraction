@@ -319,7 +319,7 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),ma
         # Samples weights strictly between 0.3 and 0.8 (and randomly flips the sign)
         adj_structure = (random_dag(n_high,density, seed=attempt_seed) != 0).astype(float)
         signs = rng.choice([-1, 1], size=adj_structure.shape)
-        absolute_weights = rng.uniform(0.25, 1.0, size=adj_structure.shape)
+        absolute_weights = rng.uniform(0.5, 2.0, size=adj_structure.shape)
         A_high_gt = adj_structure * absolute_weights * signs
         
         try:
