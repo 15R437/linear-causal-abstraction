@@ -22,12 +22,8 @@ loss_fn should take as input:
 def reconstruction_loss(A_low, T, A_high, A_hat=None, **kwds):
     baseline = np.linalg.norm(A_low, ord='fro')
     if A_hat is None:
-        with np.errstate(divide='ignore', invalid='ignore'):
-            # Must use absolute sum (L1) along axis=0 to split weights evenly
-            T_norm = T / np.sum(np.abs(T), axis=0)
-
-        T_norm = np.nan_to_num(T_norm)
-        A_hat = T @ A_high @ T_norm.T
+        R = np.linalg.pinv(T.T)
+        A_hat = T @ A_high @ R.T
 
     return np.linalg.norm((A_low - A_hat), ord='fro') / baseline
 
@@ -68,25 +64,22 @@ def reconstruction_loss_with_data(A_low, T, A_high, X, A_hat=None, **kwds):
     rmse_oracle = np.sqrt(np.mean(residual_oracle**2))
     return rmse
 
-def kl_loss(A_high,A_low,T,**kwds):
+def kl_loss(E_high,A_low,T,**kwds):
     """
     Parameters
-        A_high (numpy.ndarray): Adjacency matrix for high-level model. X_tilde (k x 1) = E_high @ U_tilde. 
+        E_high (numpy.ndarray): Edge matrix for high-level model. X_tilde (k x 1) = E_high @ U_tilde.
         A_low (numpy.ndarray): Adjacency matrix for low-level model. X (p x 1) = E_low @ U.
         T (numpy.ndrray): Linear abstraction matrix. X_tilde (k x 1) = T @ X
     Returns
         results (dict): 
     """
-    if T is None or A_high is None:
-        return np.nan
-    T = T.T
-    k = A_high.shape[0]
+    
+    k = E_high.shape[0]
     p = A_low.shape[0]
-    E_high = np.linalg.solve((np.eye(k)-A_high),np.eye(k))
     Model_H = HighLevelCausalModel(n_vars=k,E_macro=E_high)
     Model_L = LinearCausalModel(n_vars=p,low_level_scm=A_low)
     CA = CausalAbstraction(low_level=Model_L,high_level=Model_H)
-    CA.set_weights(torch.Tensor(T))
+    CA.set_weights(torch.from_numpy(T.T).float())
 
     uca_model = UnsupervisedCausalAbstractionModel(abstraction=CA)
     _,results = uca_model._training_step()
@@ -177,9 +170,10 @@ def graph_loss_entropy(A_low, T, **kwds):
 def graph_loss(A_low, T_hard, **kwds):
     n_low = A_low.shape[0]
     A_low_binary = (A_low != 0).astype(float)
+    #T_hard = (np.abs(T_hard) > 1e-6).astype(float)
     
-    # H[i,j] = number of edges between low-level node i and high-level cluster j
-    H = A_low_binary @ T_hard 
+    # H[i,j] = number of edges between low-level node i and high-level cluster j excluding intra-cluster edges
+    H = A_low_binary @ T_hard * (1 - T_hard)
     
     # 2. Replicate the forward pass of: 1 - relu(1 - H)
     # This clamps the upper bound of H to 1.0 without affecting values below it

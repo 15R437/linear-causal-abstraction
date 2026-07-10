@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
-from utils.helper import log, regularised_surjective_init, get_S, get_A_high
+from src.utils.helper import log, regularised_surjective_init, get_S, get_A_high
 
 def rbf_kernel(x, sigma=1.0):
     """
@@ -147,7 +147,7 @@ class GradDiscovery(nn.Module):
     def forward(self, X):
         T_hard, T_soft = self.get_partition(gumbel=True)
         T = T_soft
-        X_abstract = X @ T
+        X_abstract = X @ T_hard
 
         entropy_loss = torch.mean(-torch.sum(T * torch.log(T + 1e-8), dim=1))
         top_k,_ = torch.topk(T,k=2,dim=0) 
@@ -204,10 +204,10 @@ class GradDiscovery(nn.Module):
 
 
 if __name__ == "__main__":
-    from utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
-    from utils.generate_data import sample_low_level_graph, sample_gennorm_lingam_population_standardized
-    from utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, topo_loss, intervention_loss_direct, reconstruction_loss
-    from utils.helper import enforce_dag, is_dag, reconstruct_adj
+    from src.utils.plots import plot_matrix, visualize_causal_graph, plot_probability_path, plot_assignment_raster, animate_matrices
+    from src.utils.generate_data import sample_low_level_graph, sample_gennorm_lingam_population_standardized
+    from src.utils.losses import intervention_loss, observation_loss, abstraction_residual, graph_loss, topo_loss, intervention_loss, reconstruction_loss
+    from src.utils.helper import enforce_dag, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
     from src.models import hierarchical_clustering

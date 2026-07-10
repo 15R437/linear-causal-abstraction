@@ -269,27 +269,32 @@ def max_product_dag_series(A: torch.Tensor, m: torch.Tensor, T: torch.Tensor) ->
 class HailMary(nn.Module):
     def __init__(self, n_low, n_high, A_low, logits_init=None, init_assignment=None):
         super().__init__()
-        self.device = A_low.device
         self.n_low = n_low
         self.n_high = n_high
         
         self.register_buffer('A_low', A_low)  # (n_low, n_low) low-level weight matrix
-        self.register_buffer('E_low', torch.linalg.inv(torch.eye(n_low) - A_low))
+        self.register_buffer('E_low', torch.linalg.inv(torch.eye(n_low, device=A_low.device) - A_low))
         self.register_buffer('A_low_binary', (A_low != 0).float())
         row_sum = torch.sum(A_low,dim=1)
         row_sum[row_sum == 0] = 1
         self.register_buffer('A_low_normalised', A_low/row_sum[:,None])
+        self.T = nn.Parameter(torch.ones(n_low,n_high))
 
         # One logit per (low-level var, high-level block) pair
         logits_init = regularised_surjective_init(self.n_low, self.n_high) #  torch.zeros(n_low,n_high) # 
         self.logits = nn.Parameter(logits_init)
-        self.marg_logits = nn.Parameter(-100 * torch.ones(n_low,1))
 
         self.node_positions = nn.Parameter(torch.linspace(0, self.n_high, self.n_high))
 
         self.order_logits = nn.Parameter(torch.randn(self.n_high, self.n_high))
         self.register_buffer('U', torch.triu(torch.ones(self.n_high, self.n_high), diagonal=1))
-    
+
+    @property
+    def device(self):
+        # Read live off a buffer instead of caching at construction time, so that
+        # model.to(device) (e.g. moving to 'mps') keeps self.device in sync.
+        return self.A_low.device
+
     def dag_mask(self,temp=1.):
         pos = (self.n_high - 1) - F.relu(self.n_high - 1 - self.node_positions)
         diff =self.node_positions.unsqueeze(0) - self.node_positions.unsqueeze(1) #pos.unsqueeze(0) - pos.unsqueeze(1) #
@@ -318,16 +323,13 @@ class HailMary(nn.Module):
         return dag_mask, soft_mask
 
     def get_partition(self, temp=1.):
-        # Soft assignment for gradients, hard for forward logic
-        logits = torch.cat([self.logits,self.marg_logits],dim=1)
-        soft_matrix = F.softmax(logits/temp, dim=1)
-        T_soft, M_soft = torch.tensor_split(soft_matrix,[self.n_high],dim=1)
+        T_soft = F.softmax(self.logits/temp, dim=1)
 
-        indices = torch.argmax(logits, dim=1)
-        hard_matrix = F.one_hot(indices, self.n_high+1).float()
-        T_hard, M_hard = torch.tensor_split(hard_matrix,[self.n_high],dim=1)
+        indices = torch.argmax(self.logits, dim=1)
+        T_hard = F.one_hot(indices, self.n_high).float()
+        T_hard = T_soft + (T_hard - T_soft).detach()  # Straight-through estimator
         
-        return T_hard, M_hard, T_soft, M_soft
+        return T_hard,T_soft
 
             
     
@@ -368,66 +370,114 @@ class HailMary(nn.Module):
 
         return E_high_ij
 
-    
-    def abstraction_residual(self, T_soft, A_high=None):
-        n_high = T_soft.shape[1]
-        n_low = T_soft.shape[0]
-        I = torch.eye(n_low, device=T_soft.device)
+    def massidda_loss(self, T_soft):
+        # S[:,j] = (I - A_intra)^{-1} T[:,j]: within-cluster propagation of cluster j's identity column.
+        # torch.linalg.solve makes no assumption about node ordering in A_low.                      # (n_low, n_high)
+        A_intra = T_soft @ T_soft.T * self.A_low
+        I_low = torch.eye(self.n_low, device=self.device)
+        # H[l, j] = total influence of cluster j (through its internal paths) on node l.
+        # Corresponds to W_ij @ (I - W_jj)^{-1} @ 1_j in the Massidda equations.
+        H = torch.linalg.solve(I_low - A_intra.T, self.A_low.T).T                         # (n_low, n_high)
 
-        # 1. Compute s_j for all clusters (loop over n_high, which is small)
-        S_list = []
-        for j in range(n_high):
-            t_j = T_soft[:, j]
-            A_jj = t_j.unsqueeze(1) * self.A_low * t_j.unsqueeze(0)
-            s_j = torch.linalg.solve(I - A_jj, t_j)
-            S_list.append(s_j)
-        S = torch.stack(S_list, dim=1)  # (n_low, n_high)
+        # d_{i,j}[l] = T_soft[l,i] * H[l,j]: influence of cluster j within cluster i, weighted by membership.
+        # Massidda condition: for each parent cluster i, all d_{i,j} vectors must be proportional.
+        # We measure violation as (1 - cos^2) averaged over valid (i, j1<j2, j1≠i, j2≠i) triples.
+        T_sq   = T_soft ** 2                          # (n_low, n_high)
 
-        # 2. Influence matrix: col j = A_low @ (t_j * s_j)
-        influence_matrix = self.A_low @ S #(T_soft * S)  # (n_low, n_high)
+        # Gram matrix of influence vectors within each cluster i.
+        G      = torch.einsum('li,lj,lk->ijk', T_sq, H, H)  # (n_high, n_high, n_high)
+        G_diag = torch.einsum('li,lj->ij', T_sq, H ** 2)    # (n_high, n_high): squared norms ||d_{i,j}||^2
 
-        # 3. Weighted variance of influence_j over block i, for all (i,j) pairs
-        # weights[r, i] = T_soft[r, i]^2
-        T_sq = T_soft ** 2                                          # (n_low, n_high)
-        t_i_norms = T_sq.sum(dim=0).clamp(min=1e-8)                # (n_high,) effective block sizes
+        denom  = (G_diag[:, :, None] * G_diag[:, None, :]).clamp(min=1e-8)
+        cos_sq = G ** 2 / denom                       # (n_high, n_high, n_high)
 
-        # Weighted mean: a_star[i,j] = sum_r w[r,i] * influence[r,j] / sum_r w[r,i]
-        if A_high is None:
-            A_high = (T_soft.T @ influence_matrix) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
-            A_high = A_high * (1 - torch.eye(self.n_high, device=T_soft.device)) 
-        diff = influence_matrix.unsqueeze(0) - A_high.unsqueeze(1) * T_soft.T.unsqueeze(2)
+        n   = self.n_high
+        idx = torch.arange(n, device=T_soft.device)
+        excl_j1 = idx[:, None, None] != idx[None, :, None]   # i != j1
+        excl_j2 = idx[:, None, None] != idx[None, None, :]   # i != j2
+        upper   = torch.triu(torch.ones(n, n, device=T_soft.device, dtype=torch.bool), diagonal=1)
+        # Only penalise triples where cluster j has non-negligible influence on cluster i.
+        active  = G_diag > 1e-6                       # (n_high, n_high)
+        mask    = excl_j1 & excl_j2 & upper[None, :, :] & active[:, :, None] & active[:, None, :]
 
-        # Weighted variance: sum_r w[r,i] * diff[i,r,j]^2 / sum_r w[r,i]
-        weights = T_sq.T.unsqueeze(2)                               # (n_high, n_low, 1)
-        residuals = (weights * diff ** 2).sum(dim=1) / t_i_norms.unsqueeze(1)  # (n_high, n_high)
+        return (mask.float() * (1.0 - cos_sq)).sum()
 
-        # Mask diagonal and sum
-        diag_mask = 1.0 - torch.eye(n_high, device=self.device)
-        return (residuals * diag_mask).sum()
-    
-    def intervention_loss(self, S, T, corollary_version=True):
-        E_high = self.get_E_high(T)
-        E_low = self.E_low
-        I_low = torch.eye(self.n_low,device=self.device)
-        e_j_batch = torch.eye(self.n_high, device=self.device)
-        F_jj_batch = torch.diag_embed(e_j_batch)
-        F_pi_batch = torch.diag_embed(torch.einsum('ij,kj->ik',e_j_batch,T)) # ~ 1e-1
-       
-        term = I_low + F_pi_batch @ (E_low - I_low) # ~ 1e-1
-        if not corollary_version:
-            lhs = (F_pi_batch @ E_low @ T).to(self.device)
-            rhs = (term @ T @ F_jj_batch @ E_high).to(self.device)
-            residual = (lhs - rhs) ** 2
-            diag_mask = 1.0 - torch.eye(self.n_high, device=self.device)
-            masked_residual = diag_mask.unsqueeze(1) * residual
-            loss = (masked_residual).sum()
-        else:
-            lhs = (F_pi_batch @ S).to(self.device) # ~ 1e-2
-            rhs = (term @ F_pi_batch @ T) # ~ 1e-3
-            residual = (lhs - rhs)**2 # ~ 1e-4
-            loss = residual.sum() 
-        
+    def principal_angle_loss(self, T_soft, A_high):
+        """
+        For each parent cluster i with >= 2 children in A_high, measures
+        n_c - lambda_max(sum_j P_{i,j}), which is zero iff all child influence
+        subspaces share a *common* direction (the Massidda mutual condition).
+        This is strictly tighter than pairwise intersection for >= 3 children.
+        """
+        A_intra = T_soft @ T_soft.T * self.A_low
+        I_low   = torch.eye(self.n_low, device=self.device)
+        K = torch.linalg.solve((I_low - A_intra).T, self.A_low.T).T   # (n_low, n_low)
+        eps = 1e-4
+
+        edges = (A_high > 0).nonzero(as_tuple=False)   # (E, 2): (parent, child)
+        if edges.shape[0] == 0:
+            return torch.tensor(0.0, device=self.device)
+
+        # Batch-compute all influence matrices and regularised projections in one shot
+        a_vecs = T_soft[:, edges[:, 0]]                                  # (n_low, E)
+        b_vecs = T_soft[:, edges[:, 1]]                                  # (n_low, E)
+        M_all  = a_vecs.T.unsqueeze(-1) * K.unsqueeze(0) * b_vecs.T.unsqueeze(-2)  # (E, n_low, n_low)
+        G_all  = torch.bmm(M_all.mT, M_all) + eps * I_low.unsqueeze(0)  # (E, n_low, n_low)
+        P_all  = torch.bmm(M_all, torch.linalg.solve(G_all, M_all.mT))  # (E, n_low, n_low)
+
+        loss = torch.tensor(0.0, device=self.device)
+
+        for i in range(self.n_high):
+            child_mask = edges[:, 0] == i
+            n_c = int(child_mask.sum().item())
+            if n_c < 2:
+                continue
+
+            # Sum all child projections: lambda_max = n_c iff a direction lies in all col(M_{i,j})
+            P_sum = P_all[child_mask].sum(dim=0)   # (n_low, n_low)
+
+            with torch.no_grad():
+                v = P_sum.sum(dim=-1)              # (n_low,) warm start
+                for _ in range(10):
+                    v = P_sum @ v
+                    nrm = v.norm().clamp(min=1e-12)
+                    v = v / nrm
+
+            # Gradient flows through P_sum; v is a fixed direction
+            lambda_max = (v @ P_sum @ v) / (v @ v).clamp(min=1e-8)
+            loss = loss + (n_c - lambda_max)
+
         return loss
+
+    def intervention_loss(self, T_hard):
+        E   = self.E_low                                           # (n_low, n_low)
+        I   = torch.eye(self.n_low, device=self.device)
+        T = T_hard.detach() * self.T
+
+
+        # F_pi[i] = diag(T[:,i]): soft selector for cluster i, batched over all i
+        F_pi  = torch.diag_embed(T_hard.T)                             # (n_high, n_low, n_low)
+
+        # term[i] = I + F_pi[i] @ (E - I)
+        term  = I + F_pi @ (E - I)                                # (n_high, n_low, n_low)
+
+        # Phi[i] = term[i]^{-1} F_pi[i] E
+        Phi   = torch.linalg.solve(term, F_pi @ E)                # (n_high, n_low, n_low)
+
+        # Phi_T[i] = Phi[i] @ T
+        Phi_T = Phi @ T                                            # (n_high, n_low, n_high)
+
+        # proj_coeff[i,j] = T[:,i]^T Phi_T[i,:,j] / ||T[:,i]||^2
+        t_norms_sq = (T ** 2).sum(dim=0).clamp(min=1e-8)          # (n_high,)
+        proj_coeff = torch.einsum('ij,ijk->ik', T.T, Phi_T)       # (n_high, n_high)
+        proj_coeff = proj_coeff / t_norms_sq.unsqueeze(1)
+
+        # rank1[i] = P_i Phi_T[i]  where P_i = T[:,i] T[:,i]^T / ||T[:,i]||^2
+        rank1   = T.T.unsqueeze(2) * proj_coeff.unsqueeze(1)      # (n_high, n_low, n_high)
+
+        # ||(I - P_i) Phi_T[i]||_F^2 summed over i
+        residual = Phi_T - rank1                                   # (n_high, n_low, n_high)
+        return (residual ** 2).mean()
     
     def reconstruction_loss(self, T):
         A_low = self.A_low
@@ -440,120 +490,146 @@ class HailMary(nn.Module):
 
         return recon_loss
     
-    def graph_loss(self, A_low_binary, T, m_soft=None, entropy=True):
-        if not entropy:
-            H = A_low_binary @ T # H[i,j] is the [EXPECTED] number of edges between node i and cluster j
-            eps = 1e-6
-            H = StraightThroughHard.apply(H,eps)
-            HH = H @ H.T # number of shared cluster connections between node i and node j
-            H_norm_sq = (H**2).sum(1)
-            H_pen = (H_norm_sq[:,None]+ H_norm_sq[None,:]- 2*HH) # ||H[i] - H[i']||^2
-        else:
-            # H_soft[i,j] = strongest connection of node i to cluster j
-            if m_soft is not None:
-                H_soft = max_product_dag_series(A_low_binary, m=m_soft, T=T)
-            else:
-                H_soft = torch.max(A_low_binary[:, None, :] * T.T[None, :, :], dim=-1)[0]
+    def _graph_loss_common(self, T):
+        """co_assign and edge_weight depend only on T and self.A_low (not on the
+        A_low_binary argument), so callers that invoke graph_loss more than once
+        for the same T (e.g. forward()'s recon_loss + graph_loss) can compute
+        this once and share it instead of redoing the O(n_low^2 * n_high) work."""
+        co_assign = T @ T.T
 
-            H_stable = torch.clamp(H_soft, min=1e-6, max=1. - 1e-6)
+        # Edge-weight modulator: H_w[i, j] = max |A_low| weight from node i to cluster j.
+        # Weighting each cluster's CE contribution by the actual edge weight means a violation
+        # involving a heavy edge is penalised proportionally more than one with a near-zero edge.
+        H_w = torch.max(self.A_low.abs()[:, None, :] * T.T[None, :, :], dim=-1)[0] * (1 - T)
+        edge_weight = torch.max(H_w[:, None, :], H_w[None, :, :]) # (n_low, n_low, n_high): max(H_w[i,j], H_w[i',j]) of weights for each (i,i',j)
 
-            # 2. Derive pseudo-logits: log(p / (1-p))
-            H_logits = torch.logit(H_stable)
+        return co_assign, edge_weight
 
-            # 3. Use the stable cross-entropy formulation with detached targets
-            target_i = H_stable.detach()[:, None, :]
-            logits_j = H_logits[None, :, :]
+    def graph_loss(self, A_low_binary, T, intra_cluster=True, common=None):
+        # H_soft[i, j]: connectivity strength of node i to cluster j [0,1], excluding own cluster.
+        H_soft = torch.max(A_low_binary[:, None, :] * T.T[None, :, :], dim=-1)[0]
+        H_soft = H_soft * (1 - T) if not intra_cluster else H_soft
+        H_stable = torch.clamp(H_soft, min=1e-6, max=1. - 1e-6)
+        H_logits = torch.logit(H_stable)
 
-            # Analytically stable element-wise binary cross-entropy
-            pairwise_ce = target_i * F.softplus(-logits_j) + (1.0 - target_i) * F.softplus(logits_j)
-            H_pen = pairwise_ce.sum(dim=-1)
+        target_i = H_stable.detach()[:, None, :]   # (n_low, 1, n_high)
+        logits_j = H_logits[None, :, :]             # (1, n_low, n_high)
 
-        co_assign = T @ T.T                                   # (n_low, n_low)
+        # pairwise_ce[i, i', j]: CE loss for pair (i, i') on cluster j.  (n_low, n_low, n_high)
+        pairwise_ce = target_i * F.softplus(-logits_j) + (1.0 - target_i) * F.softplus(logits_j)
+
+        co_assign, edge_weight = common if common is not None else self._graph_loss_common(T)
+
+        H_pen = (pairwise_ce * edge_weight).sum(dim=-1)  # (n_low, n_low)
+
         diag_mask = 1 - torch.eye(self.n_low, device=T.device)
-        mask = co_assign * diag_mask
-        graph_loss = (mask * H_pen).mean()
-
-        return graph_loss
-
-    def forward(self,temp=1.,T=None,compute_abs=False,compute_graph=True, compute_topo=False, compute_intv=False):
-        if T is None:
-            T_hard, M_hard, T_soft, M_soft = self.get_partition(temp)
-            T = T_soft
-        else:
-            T_hard = T
-            M_soft = None
-
-        A_low_binary = (self.A_low != 0).float()
-        S = self.get_S(T)
-        dag_mask, soft_mask = self.dag_mask(temp)
-        A_high = self.get_A_high(T,S)
-
-        if compute_topo:
-            A_high = A_high * dag_mask
-            M = T.T @ A_low_binary @ T # M[i,j] is the number of edges between cluster i and cluster j
-            topo_loss = torch.sum((1 - dag_mask - torch.eye(self.n_high)) * M ** 2)
-        else:
-            topo_loss = torch.tensor(0.0, device=self.device)
-
-        recon_loss = self.reconstruction_loss(T_soft) # recon_loss_tensor(self.A_low_normalised, T_soft, A_high) # self.graph_loss(A_low_binary.T, T_soft)  #inter_block_recon_penalty(A_low_binary,T,A_high) #+ intra_cluster_penalty(A_low_binary,T)  inter_block_recon_penalty(self.A_low,T,A_high) #
-        entropy_loss = -torch.sum(T * torch.log(T + 1e-8), dim=1).mean()
-
-        top_k,_ = torch.topk(T,k=2,dim=0)
-        col_deficit = F.relu(0.5 - top_k.mean(dim=0))
-        surjective_loss = (col_deficit * (-torch.log(T + 1e-8).mean(dim=0))).sum() #torch.sum(T.mean(dim=0) * torch.log(T.mean(dim=0) + 1e-8)) + math.log(self.n_high)
-        #surjective_loss = F.relu(.5 - T.max(dim=0).values).mean() #torch.var(torch.sum(T_soft,dim=0)) #F.relu(torch.prod(1-T_soft,dim=0) - 0.1).sum() #torch.sum(F.relu(1.0 - T.sum(dim=0)))
-
-        abs_loss = self.abstraction_residual(T,A_high) if compute_abs else torch.tensor(0.0, device=self.device)
-        graph_loss = self.graph_loss(self.A_low_binary,T_soft) if compute_graph else torch.tensor(0.0, device=self.device)
-        intv_loss = self.intervention_loss(T=T,S=S) if compute_intv else torch.tensor(0.0, device=self.device)
-
-        return recon_loss, abs_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss
-
-    def train_step(self, optimiser, lambda_abs=1., lambda_graph=1., lambda_topo=1., lambda_intv=1, lambda_surj=1, lambda_entropy=1., temp=1., compute_abs=True, compute_graph=True, compute_topo=True, compute_intv=True):
-        optimiser.zero_grad()
-        recon_loss, abs_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss = self.forward(temp, compute_abs=compute_abs, compute_graph=compute_graph, compute_topo=compute_topo, compute_intv=compute_intv)
-        total_loss = (recon_loss + 
-                      (lambda_abs) * abs_loss + 
-                      (lambda_graph) * graph_loss +
-                      (lambda_topo) * topo_loss +
-                      (lambda_intv) * intv_loss +
-                      (lambda_surj) * surjective_loss + 
-                      (lambda_entropy) * entropy_loss 
-                      )
-        total_loss.backward()
-        #nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimiser.step()
-        return recon_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), intv_loss.item(), surjective_loss.item(), entropy_loss.item()
+        return (co_assign * diag_mask * H_pen).mean()
     
-    def loss_tracker(self, loss, alpha=0.1, patience=50, min_delta=1e-4):
-        pass
+    def tree_loss(self, A_low_binary, T):
+        """Encourages tree-like structure in the high-level graph by penalising nodes with multiple children."""
+        H_soft = torch.max(A_low_binary[:, None, :] * T.T[None, :, :], dim=-1)[0] * (1 - T)
+        H_pen = torch.sum(H_soft, dim=1)**2 - torch.sum(H_soft**2, dim=1)  # Penalise nodes with multiple children
+        return H_pen.mean()
+    
+    def topo_loss(self,T):
+        dag_mask, soft_mask = self.dag_mask()
+        M = T.T @ self.A_low_binary @ T # M[i,j] is the number of edges between cluster i and cluster j
+        return torch.sum((1 - dag_mask - torch.eye(self.n_high, device=self.device)) * M ** 2)
 
-    def train(self, num_epochs, lambda_abs=1., lambda_graph=100, lambda_topo=1., lambda_intv=1e4, lambda_surj=0, lambda_min_entropy=0, lambda_max_entropy=0, verbose=True,keep_history=False,compute_abs=False, compute_graph=True, compute_topo=False, compute_intv=False):
+
+    def forward(self,temp=1., compute_graph=True, compute_topo=False, compute_intv=False):
+        T_hard, T_soft = self.get_partition(temp)
+
+        co_assign = T_soft @ T_soft.T
+        edge_weight = self.A_low.abs() @ T_soft
+
+        # Reconstruction Proxy - each node in a given cluster should have the same set of parent clusters
+        H_soft_recon = torch.max(self.A_low_binary.T[:, None, :] * T_soft.T[None, :, :], dim=-1)[0]
+        H_stable_recon = torch.clamp(H_soft_recon, min=1e-6, max=1. - 1e-6)
+        H_logits_recon = torch.logit(H_stable_recon)
+        target_i = H_stable_recon.detach()[:, None, :]   # (n_low, 1, n_high)
+        logits_j = H_logits_recon[None, :, :]             # (1, n_low, n_high)
+
+        pairwise_ce = target_i * F.softplus(-logits_j) + (1.0 - target_i) * F.softplus(logits_j)
+        H_pen = (pairwise_ce * edge_weight).sum(dim=-1)  # (n_low, n_low)
+
+        diag_mask = 1 - torch.eye(self.n_low, device=self.device)
+        recon_loss = (co_assign * diag_mask * H_pen).mean()
+
+        # Graph Conditions
+        H_soft_graph = torch.max(self.A_low_binary[:, None, :] * T_soft.T[None, :, :], dim=-1)[0] * (1 - T_soft)
+        H_stable_graph = torch.clamp(H_soft_graph, min=1e-6, max=1. - 1e-6)
+        H_logits_graph = torch.logit(H_stable_graph)
+        target_i = H_stable_graph.detach()[:, None, :]   # (n_low, 1, n_high)
+        logits_j = H_logits_graph[None, :, :]             # (1, n_low, n_high)
+
+        pairwise_ce = target_i * F.softplus(-logits_j) + (1.0 - target_i) * F.softplus(logits_j)
+        H_pen = (pairwise_ce * edge_weight).sum(dim=-1)  # (n_low, n_low)
+
+        diag_mask = 1 - torch.eye(self.n_low, device=self.device)
+        graph_loss = (co_assign * diag_mask * H_pen).mean()
+
+        # Tree Conditions - each high-level cluster should have at most one child
+        tree_loss = torch.mean(torch.sum(H_soft_graph, dim=1)**2 - torch.sum(H_soft_graph**2, dim=1))
+
+        entropy_loss = -torch.sum(T_soft * torch.log(T_soft + 1e-8), dim=1).mean()
+
+        top_k,_ = torch.topk(T_soft,k=2,dim=0)
+        col_deficit = F.relu(0.5 - top_k.mean(dim=0))
+        surjective_loss = (self.n_high - torch.sum(T_hard.sum(dim=0) > 0))/self.n_high #(col_deficit * (-torch.log(T_soft + 1e-8).mean(dim=0))).sum() 
+        #surjective_loss = F.relu(.5 - T_soft.max(dim=0).values).mean() #torch.var(torch.sum(T_soft,dim=0)) #F.relu(torch.prod(1-T_soft,dim=0) - 0.1).sum() #torch.sum(F.relu(1.0 - T_soft.sum(dim=0)))#torch.sum(T_soft.mean(dim=0) * torch.log(T_soft.mean(dim=0) + 1e-8)) + math.log(self.n_high)
+
+        intv_loss = torch.tensor(0.0, device=self.device)
+  
+
+        return recon_loss, graph_loss, tree_loss, intv_loss, surjective_loss, entropy_loss
+
+    def train_step(self, optimiser, lambda_recon=10, lambda_graph=1., lambda_topo=1., lambda_intv=1, lambda_surj=1, temp=1., compute_graph=True, compute_topo=True, compute_intv=True):
+        optimiser.zero_grad()
+        recon_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss = self.forward(temp, compute_graph=compute_graph, compute_topo=compute_topo, compute_intv=compute_intv)
+        total_loss = (lambda_recon * recon_loss + 
+                      lambda_graph * graph_loss +
+                      lambda_topo * topo_loss +
+                      lambda_intv * intv_loss +
+                      lambda_surj * surjective_loss)
+        total_loss.backward()
+        optimiser.step()
+        return recon_loss.item(), graph_loss.item(), topo_loss.item(), intv_loss.item(), surjective_loss.item(), entropy_loss.item()
+
+
+    def train_graph_intv(self, graph_epochs, intv_epochs, verbose=True):
+        self.train(graph_epochs, lambda_graph=1, lambda_topo=1., lambda_intv=0, lambda_surj=0, verbose=verbose, keep_history=False, compute_graph=True, compute_intv=False)
+        self.train(intv_epochs, lambda_graph=1, lambda_topo=1., lambda_intv=1, lambda_surj=0, verbose=verbose, keep_history=False,  compute_graph=False, compute_intv=True)
+    
+    def train_graph_tree(self, num_epochs, verbose=True, keep_history=True):
+        graph_epochs = int(num_epochs * 0.2)
+        tree_epochs = num_epochs - graph_epochs
+        self.train(graph_epochs, lambda_graph=1, lambda_topo=0., lambda_intv=0, lambda_surj=0, verbose=verbose, keep_history=False, compute_graph=True, compute_intv=False)
+        history = self.train(tree_epochs, lambda_graph=1, lambda_topo=10., lambda_intv=0, lambda_surj=0, verbose=verbose, keep_history=keep_history,  compute_graph=True, compute_intv=False)
+        return history
+
+    def train(self, num_epochs, lambda_recon=10, lambda_graph=10., lambda_topo=100., lambda_intv=10, lambda_surj=1, verbose=True,keep_history=False, compute_graph=True, compute_topo=False, compute_intv=False):
         optimiser = torch.optim.Adam([{'params':[self.logits],'lr':1e-2}, {'params':[self.node_positions], 'lr':1e-2}],betas=(0.8,0.99))
-        history = {'recon_loss':[], 'abs_loss': [], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
-        lambda_entropy = lambda_max_entropy
-        rate = calculate_anneal_rate(lambda_max_entropy, lambda_min_entropy, num_epochs)
+        history = {'recon_loss':[], 'graph_loss':[], 'topo_loss':[], 'intv_loss':[], 'surjective_loss': [], 'entropy_loss': [], 'T':[], 'soft_mask':[]} if keep_history else None
+
         for epoch in range(num_epochs):
-            lambda_entropy *= rate
-            recon_loss, abs_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss = self.train_step(optimiser, lambda_abs, lambda_graph, lambda_topo, lambda_intv=lambda_intv, lambda_surj=lambda_surj, lambda_entropy=lambda_entropy, compute_abs=compute_abs, compute_graph=compute_graph, compute_topo=compute_topo, compute_intv=compute_intv)
+            recon_loss, graph_loss, topo_loss, intv_loss, surjective_loss, entropy_loss = self.train_step(optimiser, lambda_recon=lambda_recon, lambda_graph=lambda_graph, lambda_topo=lambda_topo, lambda_intv=lambda_intv, lambda_surj=lambda_surj, compute_graph=compute_graph, compute_topo=compute_topo, compute_intv=compute_intv)
             if epoch % 100 == 0 or epoch == num_epochs - 1:
                 log(f"""Epoch {epoch+1}/{num_epochs},
                         Reconstruction: {recon_loss},
-                        Abstraction: {abs_loss:.6f}, 
                         Graph: {graph_loss},
                         Topo: {topo_loss:.6f},
                         Intv: {intv_loss:.6f},
                         Surjective: {surjective_loss:.6f},
-                        Entropy: {entropy_loss} """, verbose=verbose)
+                        Entropy: {entropy_loss:.6f} """, verbose=verbose)
             if keep_history:
                 history['recon_loss'].append(recon_loss)
-                history['abs_loss'].append(abs_loss * lambda_abs)
                 history['graph_loss'].append(graph_loss * lambda_graph)
                 history['topo_loss'].append(topo_loss * lambda_topo)
                 history['intv_loss'].append(intv_loss * lambda_intv)
-                history['surjective_loss'].append(surjective_loss * lambda_surj)
-                history['entropy_loss'].append(entropy_loss * lambda_entropy)
-                history['T'].append(self.get_partition()[2].cpu().detach().numpy())
+                history['surjective_loss'].append(surjective_loss)
+                history['entropy_loss'].append(entropy_loss)
+                history['T'].append(self.get_partition()[1].cpu().detach().numpy())
                 history['soft_mask'].append(self.dag_mask()[1].cpu().detach().numpy())
         return history
 
@@ -603,12 +679,12 @@ if __name__ == "__main__":
         seed = None #44
         n_low = 100 #number of low-level variables
         n_high = 10 #number of high-level variables
-        k = 30
+        k = n_high
         density = 0.4
         internal_density = 0.
         blockiness = 0.5
         heteregoneity = 1.
-        A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density)
+        A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_high,n_low,density,seed=seed,shuffle=True,blockiness=blockiness, heterogeneity=heteregoneity, internal_density=internal_density, graph_type='random')
         T_gt_binary = (T_gt != 0) * 1
         S_gt, T_gt, A_high_gt = process_output(T_hard=T_gt_binary, A_low=A_low)
 
@@ -650,12 +726,12 @@ if __name__ == "__main__":
     runtime_hm = time.time() - start_time
 
 
-    T_hard, M_hard, T_soft, M_soft = model.get_partition()
+    T_hard, T_soft = model.get_partition()
     dag_mask = model.dag_mask()[0].cpu().detach().numpy()
     print(f"Row-wise MinMax of T_soft: {torch.min(torch.max(T_soft,dim=1).values).item()}")
     #print(f"T_hard: {T_hard}")
 
-    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard.cpu().detach().numpy(), A_low=A_low, E_low=E_low)
+    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard.cpu().detach().numpy(), A_low=A_low)
     E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
     A_recon = reconstruct_adj(A_high_pred, T_pred)
     #print(f"A_low: {A_low}")
@@ -677,7 +753,7 @@ if __name__ == "__main__":
     start_time = time.time()
     S_dict,T_dict,A_high_dict = hierarchical_clustering(A_low=A_low, n_high=k)
     runtime_hc = time.time() - start_time
-    S_baseline, T_baseline, A_high_baseline = process_output(T_hard=T_dict[k], A_low=A_low, E_low=E_low)
+    S_baseline, T_baseline, A_high_baseline = process_output(T_hard=T_dict[k], A_low=A_low)
     E_high_baseline = np.linalg.inv(np.eye(k) - A_high_baseline)
     A_recon_baseline = reconstruct_adj(A_high_baseline, T_baseline)
 
@@ -690,8 +766,8 @@ if __name__ == "__main__":
     print(f"(HC) Time: {runtime_hc:.4f}, Reconstruction Loss: {recon_loss:.4f}, Reconstruction (Data): {recon_loss_data:.4f}, Graph Loss: {graph_loss_baseline:.4f}, Observation Loss: {obs_loss:.4f}, Intervention Loss: {intv_loss:.4f}, Abstraction Residual: {abs_residual}, Is Surjective?: {T_dict[k].sum(axis=0).min() > 0}, Is DAG?: {is_dag(A_high_baseline)}")
 
     #Random
-    T_random_binary, _ = random(A_low,k=k)
-    S_random, T_random, A_high_random = process_output(T_hard=T_random_binary, A_low=A_low, E_low=E_low)
+    T_random_binary = random(A_low,k=k)
+    S_random, T_random, A_high_random = process_output(T_hard=T_random_binary, A_low=A_low)
     E_high_random = np.linalg.inv(np.eye(k) - A_high_random)
     A_recon_random = reconstruct_adj(A_high_random, T_random)
 
@@ -726,11 +802,10 @@ if __name__ == "__main__":
     fig, ax = plt.subplots(1,2, figsize=(10,8))
 
     ax[0].plot(range(0,len(history['recon_loss']),10), history['recon_loss'][::10])
-    ax[0].plot(range(0,len(history['abs_loss']),10), history['abs_loss'][::10])
     ax[0].plot(range(0,len(history['intv_loss']),10), history['intv_loss'][::10])
     ax[0].plot(range(0,len(history['topo_loss']),10), history['topo_loss'][::10])
     ax[0].plot(range(0,len(history['graph_loss']),10), history['graph_loss'][::10])
-    ax[0].legend(['Reconstruction Loss', 'Abstraction Loss','Intervention Loss', 'Topo Loss', 'Graph Loss'])
+    ax[0].legend(['Reconstruction Loss', 'Intervention Loss', 'Topo Loss', 'Graph Loss'])
     ax[0].set_yscale('log')
     ax[0].set_xlabel("Epoch")
     ax[0].set_ylabel("Loss")

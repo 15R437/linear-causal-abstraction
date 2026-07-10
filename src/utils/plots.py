@@ -254,10 +254,12 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     grid = sns.FacetGrid(df, row=row, col=col, hue='Approach', 
                     height=5, aspect=1.3, palette='Set2', sharey=False, sharex=False)
 
-    grid.map_dataframe(sns.lineplot, x=x_axis, y=y_axis, marker='o', estimator=np.median, errorbar=('pi', 95))
+    grid.map_dataframe(sns.lineplot, x=x_axis, y=y_axis, marker='o', estimator=np.mean, errorbar='se')
     if ylog:
         for ax in grid.axes.flat:
             ax.set_yscale('log')
+    else:
+        grid.set(ylim=(df[y_axis].min() * 0.9, df[y_axis].max() * 1.1))  # Add some padding to y-axis
 
     if xlog:
         for ax in grid.axes.flat:

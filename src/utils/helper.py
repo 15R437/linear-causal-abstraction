@@ -10,6 +10,16 @@ import time
 from src.utils.losses import abstraction_residual, observation_loss
 from collections import deque
 
+def get_device(cpu=True):
+    """Best available torch device: CUDA, then Apple Silicon MPS, then CPU."""
+    if cpu:
+        return torch.device('cpu')
+    elif torch.cuda.is_available():
+        return torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        return torch.device('mps')
+    return torch.device('cpu')
+
 def clusters_to_matrix(clusters,n_low):
     n_high = len({k:v for k,v in clusters.items() if k != -1})
 
@@ -24,21 +34,10 @@ def log(msg,verbose=True):
         if verbose:
             print(msg)
 
-def reconstruct_adj(A_high,T):
-    """ 
-    Numpy based!
-    This function takes a high-level adjacency matrix A_high,
-    an abstraction matrix T and reconstructs a low-level
-    adjacency matrix by distributing the high-level edges according to normalised T.
-    """
 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        T_norm = T / np.sum(np.abs(T), axis=0)
-
-    T_norm = np.nan_to_num(T_norm)
-    A_hat = T @ A_high @ T_norm.T
-
-    return T @ A_high @ T_norm.T
+def reconstruct_adj(A_high, T):
+    R = np.linalg.pinv(T.T)
+    return T @ A_high @ R.T
 
 def enforce_dag(A):
     """
@@ -465,31 +464,13 @@ def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     return A_high, T_final
 
-def process_output(T_hard, A_low, E_low=None, dag=True, n_iters=1, eps=1e-9, verbose=False):
-    if E_low is None:
-        E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
-
-    valid_solution = False
-    best_loss = np.inf
-    for _ in range(n_iters):
-        A_high_pred, T_pred, results = fit_abstraction(A_low=A_low, T_hard=T_hard) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
-        S_pred = get_S(T=T_pred, A_low=A_low, T_hard=T_hard)
-        
-        loss = abstraction_residual(A_low, T_pred, A_high_pred) #np.mean(res**2)
-        if loss < eps:
-            valid_solution = True
-            best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
-            break
-        elif loss < best_loss:
-            best_loss = loss
-            best_A_high_pred, best_T_pred= A_high_pred.copy(), T_pred.copy()
-    
-    if not valid_solution:
-        log(f"Failed to find valid solution after {n_iters} attempts.",verbose=verbose)
+def process_output(T_hard, A_low, n_restarts=10, eps=1e-9, verbose=False):
+    A_high_pred, T_pred, results = fit_abstraction(A_low=A_low, T_hard=T_hard, n_restarts=n_restarts) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
+    S_pred = get_S(T=T_pred, A_low=A_low, T_hard=T_hard)
     
     log(f"Min T value: {np.min(np.abs(T_pred[T_pred != 0]))}.",verbose=verbose)
     
-    return S_pred, best_T_pred, best_A_high_pred
+    return S_pred, T_pred, A_high_pred
 
 def solve_massidda_cosine_new(A_low, T_hard, eps=1e-12, dag=True):
     """
@@ -735,7 +716,7 @@ def get_S(T, A_low, T_hard=None):
  
 
  
-def fit_abstraction(A_low, T_hard, n_restarts=10, seed=0, maxiter=5000):
+def fit_abstraction(A_low, T_hard, n_restarts=10, seed=0, maxiter=100):
     """
     Given fixed A_low and a binary partition T_hard, construct the continuous
     abstraction T and A_high by optimising sink t-vectors and propagating

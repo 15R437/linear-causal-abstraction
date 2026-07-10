@@ -7,6 +7,7 @@ from scipy.stats import gennorm
 from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_linear_concretization
 from src.utils.helper import get_S, get_A_high
 import numpy as np
+from typing import Literal
 
 def generate_generalized_benchmark(n_low=90, n_high=3, blockiness=1.0, shuffle=True, seed=None, **kwds):
     """
@@ -310,14 +311,37 @@ def T_concretisation_sampling(A_high,T,internal_density=0,seed=None,heterogeneit
     
     return A_low, S_gt
 
-def sample_low_level_graph(n_high,n_low,density,T_lower=(-2,1),T_upper=(-1,2),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., **kwds):
+def one_child_dag(n_high, density, seed=None):
+    adj_structure = np.zeros((n_high, n_high))
+    rng = np.random.default_rng(seed)
+    for i in range(n_high - 1):
+        # Node i can only have children from index (i + 1) to (n_high - 1)
+        available_choices = n_high - (i + 1)
+        
+        # Determine which nodes actually get a child based on density
+        if rng.random() < density:
+            # Choose a random offset within the remaining valid forward nodes
+            offset = rng.integers(1, available_choices + 1)
+            child = i + offset
+            adj_structure[i, child] = 1
+    
+    return adj_structure
+
+def sample_low_level_graph(n_high,n_low,density,T_lower=(1,-2),T_upper=(2,-1),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., graph_type: Literal['random', 'chain', 'one_child'] = 'random', **kwds):
     rng = np.random.default_rng(seed)
     internal_density = 0. if internal_density is None else internal_density
     for _ in range(max_attempts):
         attempt_seed = int(rng.integers(0, 2**32 - 1)) if seed is not None else None
 
         # Samples weights strictly between 0.3 and 0.8 (and randomly flips the sign)
-        adj_structure = (random_dag(n_high,density, seed=attempt_seed) != 0).astype(float)
+        if graph_type == 'chain':
+            adj_structure = np.zeros((n_high, n_high))
+            adj_structure[np.arange(n_high-1), np.arange(1, n_high)] = (rng.random(n_high-1) < density).astype(float)
+        elif graph_type == 'one_child':
+            adj_structure = one_child_dag(n_high, density, seed=attempt_seed)
+        else:
+            adj_structure = (random_dag(n_high,density, seed=attempt_seed) != 0).astype(float)
+
         signs = rng.choice([-1, 1], size=adj_structure.shape)
         absolute_weights = rng.uniform(0.5, 2.0, size=adj_structure.shape)
         A_high_gt = adj_structure * absolute_weights * signs

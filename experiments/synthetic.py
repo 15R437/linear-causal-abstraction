@@ -12,9 +12,9 @@ import pandas as pd
 import itertools
 import yaml
 from src.utils.generate_data import generate_easy_benchmark, sample_low_level_graph, sample_by_noise_adjustment_any_order
-from src.utils.helper import get_A_high, get_S, reconstruct_adj, process_output
+from src.utils.helper import enforce_dag, get_A_high, get_S, reconstruct_adj, process_output
 from src.utils.losses import abstraction_residual, observation_loss, intervention_loss, graph_loss, reconstruction_loss, reconstruction_loss_with_data
-from src.models.wrapper import hc_abs, hc_fast, hc_binary, random, hail_mary, hail_mary_abstract, hail_mary_graph, hail_mary_graph_topo, ground_truth,hail_mary_abstract_topo, hail_mary_intv, hail_mary_intv_topo
+from src.models.wrapper import hc_abs, hc_fast, hc_binary, random, hail_mary_graph_intv, hail_mary_graph, hail_mary_intv, uca, hm_iter_dfs
 from src.utils.plots import plot_matrix, plot_results, plot_assignment_raster
 
 def flip_T(T_gt, flip_prop, seed=None):
@@ -26,20 +26,18 @@ def flip_T(T_gt, flip_prop, seed=None):
     T_init[flip_indices] = 1 - T_init[flip_indices]
     return torch.from_numpy(T_init).float()
 
-METHODS = {'hail_mary': hail_mary, 
-           'hm_abstract': hail_mary_abstract, 
-           'hm_graph': hail_mary_graph, 
+METHODS = {'hm_graph': hail_mary_graph,
+           'hm_iter_dfs': hm_iter_dfs,
            'hm_intv': hail_mary_intv,
-           'hm_intv_topo': hail_mary_intv_topo,
-           'hm_graph_topo': hail_mary_graph_topo, 
-           'hm_abstract_topo': hail_mary_abstract_topo,
+           'hm_graph_intv': hail_mary_graph_intv,
+           'uca': uca,
            'hc_fast': hc_fast, 'hc_binary': hc_binary, 'hc_abs': hc_abs,
            'random': random}
 
 data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
-regimes = [(10*n_high, n_high, list(range(n_high,10*n_high,n_high)),['hm_graph','hm_graph_topo','hc_fast','random']) for n_high in [10]
+regimes = [(10*n_high, n_high, list(range(n_high, 10*n_high + 1, n_high)),['hm_graph','uca','hc_fast','random']) for n_high in [5,10,15,20]
 
             ]
 def easy_benchmark(num_trials=10,regime_list=regimes,
@@ -48,13 +46,8 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                    heterogeneity_list=[None],
                    internal_density_list=[None],
                    METHODS=METHODS,
-                   data_gen='standard',
                    output_subdir="benchmark_run_v1"):
-    """
-    For 'easy' ground truth graphs, how often does hail_mary
-    achieve perfect abstraction compared to hc as n_low grows.
-    """
-    generate_data_fn = data_generating_methods[data_gen]
+
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     folder = Path(f"results/synthetic/{timestamp}_{output_subdir}")
     folder.mkdir(parents=True, exist_ok=True)
@@ -74,7 +67,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
             blockiness = blockiness if blockiness is not None else 0.5
             internal_density = internal_density if internal_density is not None else 0.
             het = het if het is not None else 0.1
-            A_low, T_gt, S_gt, A_high_gt = generate_data_fn(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False)
+            A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False, graph_type='one_child')
             T_init = None #if flip_prop is None else flip_T(T_gt, flip_prop)
             E_low = np.linalg.inv(np.eye(n_low) - A_low)
             X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=None)
@@ -85,29 +78,35 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
 
                     tracemalloc.start()
                     method_start = time.perf_counter()
-                    T_hard, dag_mask = method_fn(A_low=A_low, k=k)
+                    T_hard = method_fn(A_low=A_low, k=k)
                     runtime = time.perf_counter() - method_start
                     _, peak = tracemalloc.get_traced_memory()
                     tracemalloc.stop()
 
-                    min_t = 1/(5 * math.sqrt(n_low))
-                    
-                    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low, E_low=E_low)
+                    if method_name == "uca":
+                        T_pred = T_hard[:,:]
+                        col_indices = np.argmax(np.abs(T_pred),axis=1)
+                        T_hard = np.zeros_like(T_hard)
+                        T_hard[:, col_indices] = 1.
+                        #T_pred = T_pred * T_hard
+                        S_pred = get_S(A_low=A_low, T=T_pred)
+                        A_high_pred = enforce_dag(get_A_high(A_low=A_low, T=T_pred))
+                    else:
+                        S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low)
                     A_recon = reconstruct_adj(A_high=A_high_pred,T=T_pred)
                     E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
                     abs_residual = abstraction_residual(A_low=A_low,T=T_pred,A_high=A_high_pred)
                     new_result = [{'Approach': method_name,
                                     'n_low': n_low,
                                     'n_high': n_high,
+                                    'ratio': n_low/n_high,
                                     'k':k,
                                     'density': density,
                                     'blockiness':blockiness,
                                     'heterogeneity':het,
                                     'internal_density':internal_density,
                                     'surjective': np.mean((np.abs(T_hard).sum(axis=0) > 0)),
-                                    'marginalisation': np.mean((np.abs(T_pred).sum(axis=1) < min_t)),
-                                    'accuracy': np.isclose(abs_residual, 0, atol=1e-6) * 1.,
-                                    'entropy': np.mean(-1* np.sum(T_hard * np.log(T_hard + 1e-6),axis=1)),
+                                    'marginalisation': np.mean((np.abs(T_pred).sum(axis=1) < 1e-6)),
                                     'runtime': runtime,
                                     'memory': peak/1e6,
                                     'graph_loss':graph_loss(A_low=A_low,T_hard=T_hard),
@@ -129,10 +128,10 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
         runtime = time.time() - start_time
         print(f"Trial {n+1}/{num_trials} complete after {runtime:.4f}s.")
 
-        plot_easy_benchmark(timestamp=timestamp,save_dir= Path(folder/ "plots"))
+        plot_easy_benchmark(timestamp=timestamp,save_dir= Path(folder/ "plots"), approaches=method_name_list)
 
     
-def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_graph','hm_graph_topo','hc_fast','random'],x_axis='k', col_var='n_high', row_var=None, fixed_vars={}, save_dir=None):
+def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_intv','hm_graph_intv','uca','hc_fast','random'],x_axis='k', col_var='n_high', row_var=None, fixed_vars={}, save_dir=None):
     
     assert timestamp is not None or collate_from is not None, f"Expected either timestamp or collate_from to be specified."
 
@@ -194,5 +193,5 @@ if __name__ == '__main__':
     if EASY_BENCHMARK_RUN:
         easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=10)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(collate_from="20260627-170000", approaches=['hm_graph','hc_fast','random'],x_axis='k',col_var='n_high',
+        plot_easy_benchmark(collate_from="20260709-090000", approaches=['hm_graph','uca','hc_fast','random'],x_axis='k',col_var='n_high',
                             fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})
