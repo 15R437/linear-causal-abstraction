@@ -8,6 +8,7 @@ from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_
 from src.utils.helper import get_S, get_A_high
 import numpy as np
 from typing import Literal
+import networkx as nx
 
 def generate_generalized_benchmark(n_low=90, n_high=3, blockiness=1.0, shuffle=True, seed=None, **kwds):
     """
@@ -327,6 +328,52 @@ def one_child_dag(n_high, density, seed=None):
     
     return adj_structure
 
+def generate_strongly_connected_trees(n: int, extra_edges_p: float = 0.2, target_rho: float = 0.5) -> np.ndarray:
+    """
+    Generates an irreducible matrix by combining an Out-Tree and an In-Tree rooted at node 0.
+    Guarantees irreducibility while producing varied multi-cycle topologies.
+    """
+    G = nx.DiGraph()
+    G.add_nodes_from(range(n))
+    
+    root = 0
+    nodes = list(range(n))
+    
+    # Step 1: Out-tree from root to all nodes
+    unvisited = set(nodes) - {root}
+    visited = {root}
+    while unvisited:
+        u = np.random.choice(list(visited))
+        v = np.random.choice(list(unvisited))
+        G.add_edge(u, v)
+        visited.add(v)
+        unvisited.remove(v)
+        
+    # Step 2: In-tree from all nodes back to root
+    unvisited = set(nodes) - {root}
+    visited = {root}
+    while unvisited:
+        u = np.random.choice(list(unvisited))
+        v = np.random.choice(list(visited))
+        G.add_edge(u, v)
+        visited.add(u)
+        unvisited.remove(u)
+        
+    # Step 3: Add random noise edges
+    for u in range(n):
+        for v in range(n):
+            if u != v and not G.has_edge(u, v):
+                if np.random.rand() < extra_edges_p:
+                    G.add_edge(u, v)
+
+    # Step 4: Weight assignment and spectral rescaling
+    for u, v in G.edges():
+        G[u][v]['weight'] = np.random.uniform(0.1, 1.0)
+
+    A_raw = nx.to_numpy_array(G, weight='weight')
+    current_rho = np.max(np.abs(np.linalg.eigvals(A_raw)))
+    return A_raw * (target_rho / current_rho)
+
 def sample_low_level_graph(n_high,n_low,density,T_lower=(1,-2),T_upper=(2,-1),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., graph_type: Literal['random', 'chain', 'one_child'] = 'random', **kwds):
     rng = np.random.default_rng(seed)
     internal_density = 0. if internal_density is None else internal_density
@@ -471,6 +518,105 @@ def sample_by_noise_adjustment_any_order(A_low, n_samples, SNR=1, gennorm_param=
                 
             X[:, i] = signal + np.sqrt(var_noise) * eps_unscaled[:, i]
             
+    return X
+
+
+def sample_by_noise_adjustment_cyclic(A_low, n_samples, SNR=1.0, gennorm_param=1.8, target_var=1.0, seed=None):
+    """
+    Generates data from a linear Structural Causal Model represented by A_low.
+    Supports both acyclic (DAG) and solvable cyclic graphs.
+    
+    Parameters
+    ----------
+    A_low : np.ndarray of shape (p, p)
+        Weight matrix where A_low[u, v] represents edge weight u -> v.
+    n_samples : int
+        Number of observational samples to generate.
+    SNR : float
+        Signal-to-Noise Ratio used to set noise variance for non-root nodes.
+    gennorm_param : float
+        Shape parameter for the generalized normal distribution.
+    target_var : float
+        Target variance for root nodes (or base variance scale for purely cyclic graphs).
+    seed : int or None
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    X : np.ndarray of shape (n_samples, p)
+        Sampled endogenous variables satisfying X = X @ A_low + U.
+    """
+    A_low = np.asarray(A_low, dtype=float)
+    p = A_low.shape[0]
+    rng = np.random.default_rng(seed)
+    
+    # 1. Compute Reduced Form / Total Effect Matrix E = (I - A)^(-1)
+    I = np.eye(p)
+    try:
+        E = np.linalg.inv(I - A_low)
+    except np.linalg.LinAlgError:
+        raise ValueError(
+            "The provided A_low matrix is non-solvable: (I - A_low) is singular (has eigenvalue 1)."
+        )
+        
+    # 2. Compute signal transfer matrix K = E - I = (I - A)^(-1) A
+    # K[k, i] is the effect of noise U_k on node i's structural signal S_i
+    K = E - I
+    W = K ** 2  # W[k, i] = K_{ki}^2 gives variance propagation weights
+    
+    # 3. Identify root nodes (in-degree == 0)
+    in_degrees = np.sum(np.abs(A_low) > 1e-9, axis=0)
+    root_mask = (in_degrees == 0)
+    
+    # 4. Solve the linear system for noise variances v = Var(U)
+    M_sys = np.eye(p)
+    b = np.zeros(p)
+    
+    for i in range(p):
+        if root_mask[i]:
+            # Root node variance is fixed to target_var
+            M_sys[i, :] = 0.0
+            M_sys[i, i] = 1.0
+            b[i] = target_var
+        else:
+            # Non-root node variance: Var(U_i) = Var(S_i) / SNR
+            M_sys[i, :] = - (1.0 / SNR) * W[:, i]
+            M_sys[i, i] += 1.0
+            b[i] = 0.0
+
+    v = None
+    if np.any(root_mask):
+        try:
+            v_sol = np.linalg.solve(M_sys, b)
+            if np.all(v_sol > 1e-12):
+                v = v_sol
+        except np.linalg.LinAlgError:
+            pass
+            
+    # Fallback to iterative relaxation if the linear system is singular or yields non-positive variances
+    # (e.g., in strongly connected graphs without root nodes or with high feedback gain)
+    if v is None:
+        v = np.full(p, target_var)
+        for _ in range(300):
+            var_signal = W.T @ v
+            v_next = np.where(root_mask, target_var, var_signal / SNR)
+            v_next = np.maximum(v_next, 1e-6)
+            if not np.any(root_mask):
+                v_next = (v_next / np.mean(v_next)) * target_var
+            if np.all(np.abs(v_next - v) < 1e-8):
+                v = v_next
+                break
+            v = v_next
+
+    # 5. Generate unscaled noise array and scale by calculated standard deviations
+    eps_unscaled = gennorm.rvs(
+        gennorm_param, loc=0.0, scale=1.0,
+        size=(n_samples, p), random_state=rng
+    )
+    U = eps_unscaled * np.sqrt(v)
+    
+    # 6. Compute observational samples X = U @ (I - A)^(-1)
+    X = U @ E
     return X
 
 if __name__ == "__main__":

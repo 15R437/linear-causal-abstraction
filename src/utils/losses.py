@@ -92,7 +92,9 @@ def observation_loss(E_low,E_high,S,T,**kwds):
     obs_loss = np.mean((lhs - rhs)**2)
     return obs_loss
 
-def intervention_loss(E_low, E_high, S, T, **kwds):
+def intervention_loss(E_low, E_high, S, T, T_hard=None, **kwds):
+    if T_hard is None:
+        T_hard = (T != 0).astype(float)
     n_low, n_high = T.shape
     I_low = np.eye(n_low)
     I_high = np.eye(n_high)
@@ -100,10 +102,16 @@ def intervention_loss(E_low, E_high, S, T, **kwds):
     F_ii = np.zeros((n_high, n_high, n_high))
     idx = np.arange(n_high)
     F_ii[idx, idx, idx] = 1.0
-    F_pi = ((T.T != 0).astype(float))[..., None] * I_low
+    F_pi = (T_hard.T)[..., None] * I_low
 
-
-    E_high_do = E_high[None, ...] - (E_high - I_high)[None, ...] @ F_ii @ E_high[None, ...]
+    # E_high_do needs the same (I + F(E-I))^{-1} correction as E_low_do below -- without it,
+    # this only computes the correct post-intervention total-effect matrix when the intervened
+    # high-level variable has no cycle back into itself (the correction reduces to the identity
+    # there, which is why this was invisible on every acyclic A_high). With a genuine cycle
+    # through variable i, omitting it gives the wrong E_high_do and a spurious nonzero loss even
+    # for an exact abstraction.
+    inv_term_high = np.linalg.inv(I_high + F_ii @ (E_high - I_high))
+    E_high_do = E_high[None, ...] - (E_high - I_high)[None, ...] @ inv_term_high @ F_ii @ E_high[None, ...]
 
     inv_term_low = np.linalg.inv(I_low + F_pi @ (E_low - I_low))
     E_low_do = E_low - (E_low - I_low) @ inv_term_low @ F_pi @ E_low

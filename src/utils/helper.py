@@ -126,6 +126,18 @@ def get_S(T, A_low):
     S = np.linalg.solve(I_low - A_intra, T)
     return S
 
+def get_S(T, A_low, T_hard=None):
+    if T_hard is None:
+        T_hard = (T != 0).astype(int)
+    idx = cluster_indices(T_hard)
+    S = np.zeros_like(T)
+    for j in range(T.shape[1]):
+        if len(idx[j]) == 0:
+            continue
+        W_jj = A_low[np.ix_(idx[j], idx[j])]
+        S[idx[j], j] = np.linalg.solve(np.eye(len(idx[j])) - W_jj, T[idx[j], j])
+    return S
+
 def get_A_high(T, A_low, priority='abstraction'):
     n_low,n_high = T.shape
     if priority == 'recon':
@@ -464,8 +476,8 @@ def solve_massidda_cosine(A_low, T_hard, eps=1e-12, dag_mask=None):
 
     return A_high, T_final
 
-def process_output(T_hard, A_low, n_restarts=10, eps=1e-9, verbose=False):
-    A_high_pred, T_pred, results = fit_abstraction(A_low=A_low, T_hard=T_hard, n_restarts=n_restarts) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
+def process_output(T_hard, A_low, E_low=None, n_restarts=10, eps=1e-9, verbose=False):
+    A_high_pred, T_pred = fit_abstraction_alternative(A_low=A_low, E_low=E_low, T_hard=T_hard, n_restarts=n_restarts) #alternating_optimisation(A_low=A_low,T_hard=T_hard, dag_mask=dag_mask, n_iters=n_iters)
     S_pred = get_S(T=T_pred, A_low=A_low, T_hard=T_hard)
     
     log(f"Min T value: {np.min(np.abs(T_pred[T_pred != 0]))}.",verbose=verbose)
@@ -701,22 +713,9 @@ def reverse_topo_order(mask):
         visit(k)
     return order 
  
- 
-def get_S(T, A_low, T_hard=None):
-    if T_hard is None:
-        T_hard = (T != 0).astype(int)
-    idx = cluster_indices(T_hard)
-    S = np.zeros_like(T)
-    for j in range(T.shape[1]):
-        if len(idx[j]) == 0:
-            continue
-        W_jj = A_low[np.ix_(idx[j], idx[j])]
-        S[idx[j], j] = np.linalg.solve(np.eye(len(idx[j])) - W_jj, T[idx[j], j])
-    return S
- 
 
  
-def fit_abstraction(A_low, T_hard, n_restarts=10, seed=0, maxiter=100):
+def fit_abstraction(A_low, T_hard, E_low=None,n_restarts=10, seed=0, maxiter=100):
     """
     Given fixed A_low and a binary partition T_hard, construct the continuous
     abstraction T and A_high by optimising sink t-vectors and propagating
@@ -806,4 +805,138 @@ def fit_abstraction(A_low, T_hard, n_restarts=10, seed=0, maxiter=100):
             vote_unnorm = M_edge[(X, int(c))] @ t[c]
             A_high[X, int(c)] = t[X] @ vote_unnorm  # t[X] is unit-norm so denominator = 1
 
-    return A_high, T, {"penalty": penalty, "n_sinks": len(sinks)}
+    return A_high, T
+
+def fit_abstraction_alternative(A_low, E_low, T_hard, n_restarts=10, seed=None, maxiter=100):
+    """
+    Given fixed E_low and binary partition matrix T_hard, optimise the non-zero values of T
+    so that with LHS = (I + F_pi @ (E_low - I))^{-1} @ F_pi @ E @ T , the columns of LHS
+    lie in the span of T[:,i] for each cluster i.
+    """
+    p,k = T_hard.shape
+    if E_low is None:
+        E_low = np.linalg.inv(np.eye(p) - A_low)
+
+    idx = cluster_indices(T_hard)
+    row_indices = np.concatenate(idx) if k else np.array([], dtype=int)
+    col_indices = np.repeat(np.arange(k), [len(ix) for ix in idx])
+
+    # term = I + F_pi @ (E_low - I) depends only on T_hard and E_low (both fixed for the
+    # whole optimisation), never on the free vector t -- so it's solved for ONCE here rather
+    # than refactorised on every objective call. LHS(T) = term^{-1} @ F_pi @ E_low @ T is
+    # linear in T, so folding the (constant) left-hand factor into B = term^{-1} @ F_pi @ E_low
+    # turns each subsequent evaluation into a cheap matmul B @ T instead of an O(p^3) solve.
+    I = np.eye(p)
+    F_pi = (T_hard.T)[..., None] * I                      # (n_high, n_low, n_low)
+    term = I + F_pi @ (E_low - I)                          # (n_high, n_low, n_low)
+    B = np.linalg.solve(term, F_pi @ E_low)                # (n_high, n_low, n_low), constant
+    B_t = torch.from_numpy(B)
+    row_idx_t = torch.from_numpy(row_indices).long()
+    col_idx_t = torch.from_numpy(col_indices).long()
+
+    def objective_and_grad(t_np):
+        t = torch.tensor(t_np, dtype=torch.float64, requires_grad=True)
+        T = torch.zeros((p, k), dtype=torch.float64).index_put((row_idx_t, col_idx_t), t)
+
+        LHS = B_t @ T                                                      # (n_high, n_low, n_high)
+
+        # proj_coeff[i,j] = T[:,i]^T LHS[i,:,j] / ||T[:,i]||^2
+        t_norms_sq = (T ** 2).sum(dim=0).clamp(min=1e-8)                   # (n_high,)
+        proj_coeff = torch.einsum('ij,ijk->ik', T.T, LHS) / t_norms_sq.unsqueeze(1)  # (n_high, n_high)
+
+        # rank1[i] = P_i LHS[i]  where P_i = T[:,i] T[:,i]^T / ||T[:,i]||^2
+        rank1 = T.T.unsqueeze(2) * proj_coeff.unsqueeze(1)                  # (n_high, n_low, n_high)
+
+        # ||(I - P_i) LHS[i]||_F^2 summed over i
+        residual = LHS - rank1                                             # (n_high, n_low, n_high)
+        f = (residual ** 2).mean()
+
+        f.backward()
+        return f.item(), t.grad.numpy().astype(np.float64)
+
+    # Without a scale constraint, shrinking any column of T toward 0 strictly decreases
+    # this residual (T=0 gives exactly 0), so SLSQP needs the same per-cluster unit-norm
+    # equality constraint used in solve_massidda_cosine to avoid the degenerate optimum.
+    cluster_sizes = [len(ix) for ix in idx]
+    offsets = np.cumsum([0] + cluster_sizes)
+    constraints = []
+
+    def make_con(lo, hi):
+        return lambda x: np.sum(x[lo:hi] ** 2) - 1.0
+
+    def make_jac(lo, hi, n):
+        def jacobian(x):
+            g = np.zeros(n)
+            g[lo:hi] = 2.0 * x[lo:hi]
+            return g
+        return jacobian
+
+    for j in range(k):
+        lo, hi = offsets[j], offsets[j + 1]
+        if hi == lo:
+            continue
+        constraints.append({'type': 'eq', 'fun': make_con(lo, hi), 'jac': make_jac(lo, hi, p)})
+
+    rng = np.random.RandomState(seed)
+    best_t, best_val = None, np.inf
+    for _ in range(n_restarts):
+        t0 = rng.randn(p)
+        for j in range(k):
+            lo, hi = offsets[j], offsets[j + 1]
+            if hi > lo:
+                n = np.linalg.norm(t0[lo:hi])
+                if n > 1e-12:
+                    t0[lo:hi] /= n
+        res = minimize(objective_and_grad, t0, jac=True, method='SLSQP', constraints=constraints, tol=1e-9, options={"maxiter": maxiter})
+        if res.fun < best_val:
+            best_t, best_val = res.x, res.fun
+
+    T = np.zeros((p,k))
+    T[row_indices,col_indices] = best_t
+    A_high = get_A_high(T=T, A_low=A_low)
+
+    return A_high, T
+
+
+def is_non_sink_subgraph_strongly_connected(weight_matrix: np.ndarray) -> bool:
+    """
+    Checks whether the induced subgraph of non-sink nodes is strongly connected.
+    
+    Assumes weight_matrix[i, j] != 0 indicates a directed edge X_i -> X_j.
+    A sink node is defined as having an out-degree of 0 (an all-zero row).
+
+    Parameters
+    ----------
+    weight_matrix : np.ndarray
+        A square 2D NumPy array representing the adjacency/weight matrix.
+
+    Returns
+    -------
+    bool
+        True if the subgraph of non-sinks is strongly connected (or trivial),
+        False otherwise.
+    """
+    A = np.asarray(weight_matrix)
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError("weight_matrix must be a square 2D array.")
+    
+    # Out-degree corresponds to non-zero entries along rows (X_i -> X_j)
+    out_degrees = np.count_nonzero(A, axis=1)
+    non_sinks = np.where(out_degrees > 0)[0]
+    
+    k = len(non_sinks)
+    if k <= 1:
+        return True  # Graph with 0 or 1 node is trivially strongly connected
+    
+    # Extract induced submatrix for non-sink nodes
+    A_sub = A[np.ix_(non_sinks, non_sinks)]
+    
+    # Initialize reachability matrix (with self-loops)
+    reachability = (A_sub != 0).copy()
+    np.fill_diagonal(reachability, True)
+    
+    # Vectorized Floyd-Warshall transitive closure
+    for idx in range(k):
+        reachability |= reachability[:, idx:idx+1] & reachability[idx:idx+1, :]
+        
+    return bool(np.all(reachability))

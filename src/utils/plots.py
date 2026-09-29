@@ -236,7 +236,7 @@ def plot_matrix(matrix_list,title_list,fig_title=''):
     fig.suptitle(fig_title,fontsize=16,fontweight='bold')
     plt.show()
 
-def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None,ylog=False,xlog=False, save_dir=None):
+def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None,ylog=False,xlog=False, save_dir=None, title=None):
     # 1. Filter data
     df = results_df.copy()
     if approaches:
@@ -270,10 +270,15 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     grid.set_axis_labels(x_axis, y_axis)
     grid.figure.subplots_adjust(left=0.1, right=1-0.05, top=1-0.1)
     grid.add_legend(title="Approach")
-    row_tmpl = row + " = {row_name} " if row else ""
-    col_tmpl = col + " = {col_name} " if col else ""
-    grid.set_titles(row_template=row_tmpl, col_template=col_tmpl)
-    
+    if title is not None:
+        grid.set_titles(row_template="", col_template="")
+        for ax in grid.axes.flat:
+            ax.set_title(title)
+    else:
+        row_tmpl = row + " = {row_name} " if row else ""
+        col_tmpl = col + " = {col_name} " if col else ""
+        grid.set_titles(row_template=row_tmpl, col_template=col_tmpl)
+
     title_str = f""
     if row or col:
         #title_str += f" grouped by {row if row else ''} {col if col else ''}"

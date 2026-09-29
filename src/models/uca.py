@@ -62,8 +62,12 @@ def uca_model(A_low,k):
 
 def uca_train(uca_model, num_epochs):
     for epoch in range(num_epochs):
+        try:
             _, results = uca_model._training_step()
-    
+        except torch.linalg.LinAlgError:
+            print(f"uca_train: singular matrix at epoch {epoch}/{num_epochs}, stopping early with current abstraction.")
+            break
+
     return uca_model.abstraction
 
 import torch
