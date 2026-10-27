@@ -113,7 +113,7 @@ def hierarchical_clustering(A_low, n_high=1,init_assignment=None,loss_list=[heur
         if compute_all_levels or k == n_high:
             T = get_T(assignment_array)
             A_high = get_A_high(A_low=A_low, T=T)
-            S = get_S(A_low=A_low, T=T)
+            S = get_S(E_low=E_low, T=T, A_low=A_low)
             S_dict[k] = S
             T_dict[k] = T
             A_high_dict[k] = A_high

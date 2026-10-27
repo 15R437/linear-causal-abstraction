@@ -60,13 +60,53 @@ def uca_model(A_low,k):
 
     return model
 
-def uca_train(uca_model, num_epochs):
+def uca_train(uca_model, num_epochs, verbose=False):
+    """Train the abstraction for `num_epochs` gradient steps.
+
+    FIXED 2026-09-24. This previously called `_training_step()` in a bare loop and never
+    applied the gradient. `_training_step` only COMPUTES the loss and returns it -- under
+    Lightning it is the Trainer that calls `backward()` and `optimizer.step()` -- and there
+    is no Trainer here, so the returned abstraction was exactly its random initialisation
+    regardless of `num_epochs`. Measured before the fix: T bit-identical after 300 steps,
+    `tau_map_weights.weight.grad is None`, loss flat at ~3.5e5. After it: loss 3.5e5 -> 5.3e4
+    over 30k steps and T moves.
+
+    The optimiser comes from the model's own `configure_optimizers()`, so the upstream
+    learning rate and parameter groups are respected. That call builds a CosineAnnealingLR
+    referencing `self.trainer.max_epochs` when `lr_scheduler == "cosine"`; there is no
+    trainer here, so it is guarded and falls back to plain Adam at the model's own lr.
+
+    NOTE ON EPOCHS: one "epoch" here is a single gradient step on one sampled intervention,
+    NOT a pass over a dataloader as upstream's `max_epochs` means. The two numbers are not
+    comparable. Upstream defines no convergence criterion (no EarlyStopping anywhere in the
+    package), so this runs a fixed budget; the loss is stochastic across steps, so any
+    plateau rule added later needs a windowed mean rather than a per-step comparison.
+    """
+    try:
+        cfg = uca_model.configure_optimizers()
+        if isinstance(cfg, dict):
+            optimizer = cfg["optimizer"]
+        elif isinstance(cfg, (list, tuple)):
+            optimizer = cfg[0]
+        else:
+            optimizer = cfg
+    except Exception as e:
+        print(f"uca_train: configure_optimizers failed ({type(e).__name__}: {e}); "
+              f"falling back to Adam(lr={getattr(uca_model, 'lr', 1e-3)}).")
+        optimizer = torch.optim.Adam(uca_model.parameters(),
+                                     lr=getattr(uca_model, "lr", 1e-3))
+
     for epoch in range(num_epochs):
         try:
-            _, results = uca_model._training_step()
+            loss, results = uca_model._training_step()
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
         except torch.linalg.LinAlgError:
             print(f"uca_train: singular matrix at epoch {epoch}/{num_epochs}, stopping early with current abstraction.")
             break
+        if verbose and epoch % max(1, num_epochs // 10) == 0:
+            print(f"uca_train: epoch {epoch}/{num_epochs} loss {float(loss):.4g}")
 
     return uca_model.abstraction
 

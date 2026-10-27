@@ -210,7 +210,7 @@ if __name__ == "__main__":
     from src.utils.helper import enforce_dag, is_dag, reconstruct_adj
     import matplotlib.pyplot as plt
     from pathlib import Path
-    from src.models import hierarchical_clustering
+    from src.algos import hierarchical_clustering
     import time
 
     # Graph Sampling
@@ -244,7 +244,7 @@ if __name__ == "__main__":
     T_pred = T_pred.cpu().detach().numpy()
     T_soft = T_soft.cpu().detach().numpy()
 
-    S_pred = get_S(T=T_pred, A_low=A_low)
+    S_pred = get_S(T=T_pred, E_low=np.linalg.inv(np.eye(A_low.shape[0]) - A_low), A_low=A_low)
     A_high_pred = get_A_high(T=T_pred, A_low=A_low)
 
     visualize_causal_graph(A_low, A_high_pred, T_pred, S_pred, title='Learned Causal Abstraction',threshold=1e-3)

@@ -121,7 +121,8 @@ def generate_easy_benchmark(n_low=60, blockiness=1.0, cluster_balance=0.5, shuff
 
         T_gt = T_gt[:][:,rng.permutation(2)]
     
-    S_gt = get_S(T=T_gt, A_low=A_low)
+    E_low_gt = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
+    S_gt = get_S(T=T_gt, E_low=E_low_gt, A_low=A_low)
     A_high_gt = get_A_high(T=T_gt, A_low=A_low)
     return A_low, T_gt, S_gt, A_high_gt
     
@@ -157,12 +158,15 @@ def sample_disjoint_uniform(lower_bounds, upper_bounds, size, seed=None):
     """
 
     assert len(lower_bounds) == len(upper_bounds), "lower_bounds must have the same length as upper_bounds"
+    # default_rng passes a Generator straight through, so callers can hand down their own
+    # stream instead of a seed. These two draws used to come from the global np.random
+    # state, which is why a fixed seed reproduced the graph structure but never the weights.
     rng = np.random.default_rng(seed)
     num_intervals = len(lower_bounds)
-    interval_choices = np.random.randint(0, num_intervals, size=size)
+    interval_choices = rng.integers(0, num_intervals, size=size)
 
-    unit_samples = np.random.uniform(0, 1, size=size)
-    
+    unit_samples = rng.uniform(0, 1, size=size)
+
 
     lows = np.array(lower_bounds)[interval_choices]
     highs = np.array(upper_bounds)[interval_choices]
@@ -188,14 +192,14 @@ def generate_random_T(n_low,n_high,lower_bounds=(1.,),upper_bounds=(1.,),marg_pr
     partitions.sort()
     block_sizes = [partitions[0]]
     #T[0:partitions[0],0] = rng.uniform(T_range[0],T_range[1],size=partitions[0]) if rng.uniform() > marg_prob else 0
-    T[0:partitions[0],0] = sample_disjoint_uniform(lower_bounds,upper_bounds,size=partitions[0]) * (rng.uniform(size=partitions[0]) > marg_prob)
+    T[0:partitions[0],0] = sample_disjoint_uniform(lower_bounds,upper_bounds,seed=rng,size=partitions[0]) * (rng.uniform(size=partitions[0]) > marg_prob)
     for i in range(1,n_high-1):
         block_sizes.append(partitions[i]-partitions[i-1])
-        T[partitions[i-1]:partitions[i],i] = sample_disjoint_uniform(lower_bounds,upper_bounds,size=partitions[i]-partitions[i-1]) * (rng.uniform(size=partitions[i]-partitions[i-1]) > marg_prob)
+        T[partitions[i-1]:partitions[i],i] = sample_disjoint_uniform(lower_bounds,upper_bounds,seed=rng,size=partitions[i]-partitions[i-1]) * (rng.uniform(size=partitions[i]-partitions[i-1]) > marg_prob)
         #T[partitions[i-1]:partitions[i],i] = rng.uniform(T_range[0],T_range[1],size=partitions[i]-partitions[i-1]) if rng.uniform() > marg_prob else 0
     
     block_sizes.append(n_low-partitions[-1])
-    T[partitions[-1]:n_low,n_high-1] = sample_disjoint_uniform(lower_bounds,upper_bounds,size=n_low-partitions[-1]) * (rng.uniform(size=n_low-partitions[-1]) > marg_prob)
+    T[partitions[-1]:n_low,n_high-1] = sample_disjoint_uniform(lower_bounds,upper_bounds,seed=rng,size=n_low-partitions[-1]) * (rng.uniform(size=n_low-partitions[-1]) > marg_prob)
     #T[partitions[-1]:n_low,n_high-1] = rng.uniform(T_range[0],T_range[1],size=n_low-partitions[-1])
     block_sizes.append(0)
 
@@ -374,7 +378,32 @@ def generate_strongly_connected_trees(n: int, extra_edges_p: float = 0.2, target
     current_rho = np.max(np.abs(np.linalg.eigvals(A_raw)))
     return A_raw * (target_rho / current_rho)
 
-def sample_low_level_graph(n_high,n_low,density,T_lower=(1,-2),T_upper=(2,-1),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., graph_type: Literal['random', 'chain', 'one_child'] = 'random', **kwds):
+def _is_weakly_connected(A):
+    """Weak connectivity of a directed adjacency matrix, isolated nodes included."""
+    from scipy.sparse.csgraph import connected_components
+    import scipy.sparse as _sp
+    if A.shape[0] <= 1:
+        return True
+    n_comp, _ = connected_components(_sp.csr_matrix((A != 0).astype(float)),
+                                     directed=True, connection='weak')
+    return n_comp == 1
+
+
+def sample_low_level_graph(n_high,n_low,density,T_lower=(1,-2),T_upper=(2,-1),marg_prob=0,seed=None,max_attempts=10,shuffle=False, blockiness=1, internal_density=0., heterogeneity=1., graph_type: Literal['random', 'chain', 'one_child'] = 'random', connected=True, **kwds):
+    """Sample a low-level linear model together with its generating abstraction.
+
+    connected: reject any draw whose low-level graph is not weakly connected. A
+        disconnected draw is really two unrelated systems sharing an index, and an
+        edge-less high-level DAG is then the *correct* abstraction of it, which makes
+        such draws useless for scoring structure recovery.
+
+        Note for graph_type='one_child': a node may have at most one child, so the graph
+        has at most n_high-1 edges - exactly the number weak connectivity requires. Every
+        node must therefore fire, which happens with probability density**(n_high-1).
+        Connectivity is only practically reachable at density=1.0, where it is certain;
+        below that this flag will exhaust max_attempts. Vary difficulty with n_low/n_high,
+        blockiness, heterogeneity or internal_density instead of density.
+    """
     rng = np.random.default_rng(seed)
     internal_density = 0. if internal_density is None else internal_density
     for _ in range(max_attempts):
@@ -397,6 +426,9 @@ def sample_low_level_graph(n_high,n_low,density,T_lower=(1,-2),T_upper=(2,-1),ma
             T_gt,block_size = generate_random_T(n_low, n_high, T_lower, T_upper, marg_prob=marg_prob, seed=attempt_seed)
             A_low, S_gt = T_concretisation_sampling(A_high=A_high_gt,T=T_gt,internal_density=internal_density,blockiness=blockiness,heterogeneity=heterogeneity,seed=seed)#sample_linear_concretization(A_high_gt,T_gt,block_size,internal=internal,alpha=1.,style='uniform')
             assert np.any(A_low != 0) #ensure we don't return a trivial graph with no edges
+            if connected and not _is_weakly_connected(A_low):
+                continue
+
             if shuffle:
                 perm = rng.permutation(n_low)
                 A_low = A_low[perm][:,perm]

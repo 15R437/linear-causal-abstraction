@@ -17,7 +17,7 @@ import matplotlib.cm as cm
 from itertools import combinations
 from src.utils.helper import get_S, get_A_high, regularised_surjective_init
 
-def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title='Causal Abstraction Graph'):
+def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=1e-5,title='Causal Abstraction Graph',save_path=None):
     """
     Visualizes low-level nodes, high-level nodes, and the learned abstraction.
     """
@@ -208,7 +208,12 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=0,title=
 
     plt.title(title, fontsize=14, fontweight='bold')
     plt.axis('off')
-    plt.show()
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+        fig.savefig(save_path, dpi=160, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
 
 
 
@@ -288,9 +293,47 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
     if save_dir:
         os.makedirs(save_dir, exist_ok=True)
         plt.savefig(f"{save_dir}/{y_axis}.png", dpi=300, bbox_inches='tight')
+        plt.savefig(f"{save_dir}/{y_axis}.pdf", bbox_inches='tight')
         plt.close()
 
     plt.show()
+
+def plot_shared_legend(results_df, approaches=None, save_dir=None, filename="legend",
+                       label_map=None, ncol=None, marker='o'):
+    """
+    Renders only the 'Approach' legend shared by the plot_results panels and saves
+    it as a standalone, tightly-cropped PDF (``<save_dir>/<filename>.pdf``).
+
+    The colour/order mapping is taken from an identically-constructed FacetGrid so
+    the legend always matches the per-metric figures.
+    """
+    df = results_df.copy()
+    if approaches:
+        df = df[df['Approach'].isin(approaches)]
+
+    sns.set_theme(style="whitegrid")
+    grid = sns.FacetGrid(df, hue='Approach', palette='Set2')
+    hue_names = list(grid.hue_names)
+    colors = list(grid._colors)
+    plt.close(grid.figure)
+
+    label_map = label_map or {}
+    handles = [Line2D([0], [0], color=colors[i], marker=marker, lw=1.5, markersize=6,
+                      label=label_map.get(name, name))
+               for i, name in enumerate(hue_names)]
+
+    fig = plt.figure(figsize=(0.1, 0.1))
+    legend = fig.legend(handles=handles, title="Approach", loc='center',
+                        ncol=ncol or len(handles), frameon=True)
+    fig.canvas.draw()
+    bbox = legend.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        fig.savefig(f"{save_dir}/{filename}.pdf", bbox_inches=bbox)
+        plt.close(fig)
+    else:
+        plt.show()
 
 def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,initial_T : Literal['uniform', 'compact','surjective'] = 'uniform'):
     n_plots = len(LOSSES)
@@ -316,7 +359,7 @@ def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,i
         loss_fn = LOSSES[loss_name]
         loss_values = []
         for T in T_list:
-            S = get_S(T=T, A_low=A_low)
+            S = get_S(T=T, E_low=E_low, A_low=A_low)
             A_high = get_A_high(T=T, A_low=A_low)
             E_high = np.linalg.inv(np.eye(n_high) - A_high)
             try:
@@ -519,3 +562,155 @@ def animate_matrices(matrix_list:list[np.ndarray], xlabel:str = '', ylabel:str =
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     ani.save(filename, writer='pillow', fps=15)
     
+
+def animate_partition_training(A_low, history, save_path='results/timelapse/partition.gif',
+                               title='', as_fraction=True, max_active_frames=45,
+                               tail_frames=12, hold=6, figsize=(11, 6.5)):
+    """Animate T_soft over training, with the losses and the hard metrics alongside.
+
+    Left   : T_soft, rows sorted by final cluster so the block structure is legible.
+    Top-R  : the training losses as stored in `history` (already lambda-weighted by
+             HailMary.train), on a log axis.
+    Bot-R  : hard metrics recomputed from argmax(T_soft) at each frame. With
+             `as_fraction=True` (default) all three are rates in [0, 1] on ONE axis --
+             violating nodes / p, clusters used / k offered, intra-cluster edge mass -- which
+             keeps them comparable across p and avoids a twin axis. The raw counts still
+             appear in the header. Set `as_fraction=False` for counts on a twin axis.
+    A moving line marks the current epoch on both plots.
+
+    Frames are sampled densely up to the last cluster REASSIGNMENT and sparsely after, since
+    the optimiser typically settles early (in one measured run, epoch 1015 of 6000) and the
+    remaining epochs only sharpen T_soft. Each frame is repeated `hold` times because
+    matplotlib's pillow writer is pinned to 15fps here, so repetition is what slows playback.
+
+    Args:
+        A_low: (p, p) low-level adjacency.
+        history: dict returned by `HailMary.train(..., keep_history=True)`. Needs 'T'
+            (a T_soft snapshot per epoch) and optionally the loss lists.
+        save_path: where to write the .gif. Parent directories are created.
+        title: prefix for the figure suptitle.
+        as_fraction: plot the bottom-right metrics as rates in [0,1] on a single axis
+            (default) rather than counts on a twin axis.
+        max_active_frames / tail_frames: frame budget before and after the last reassignment.
+        hold: repeat each frame this many times (15/hold = effective fps).
+
+    Returns the path written.
+    """
+    Ts_all = history['T'] if isinstance(history, dict) else history
+    if not len(Ts_all):
+        raise ValueError('history contains no T snapshots -- pass keep_history=True to train()')
+    A_low = np.asarray(A_low)
+    Ab = (A_low != 0)
+    absA = np.abs(A_low)
+    tot = max(absA.sum(), 1e-12)
+    p = A_low.shape[0]
+    n_epochs = len(Ts_all)
+
+    def hard_metrics(Tsoft):
+        lab = Tsoft.argmax(1)
+        groups = [np.where(lab == j)[0] for j in range(Tsoft.shape[1])]
+        groups = [g for g in groups if len(g)]
+        K = len(groups)
+        M = np.zeros((K, K), bool)
+        for x in range(K):
+            for y in range(K):
+                if x != y and Ab[np.ix_(groups[x], groups[y])].any():
+                    M[x, y] = True
+        bad = set()
+        for x in range(K):
+            for y in np.where(M[x])[0]:
+                for i in groups[x]:
+                    if not Ab[i, groups[y]].any():
+                        bad.add(int(i))
+        T = np.zeros((p, K))
+        for j, g in enumerate(groups):
+            T[g, j] = 1
+        co = T @ T.T
+        np.fill_diagonal(co, 0)
+        one_child = int(M.sum(1).max() <= 1) if K else 1
+        return len(bad), K, float((absA * co).sum() / tot), one_child
+
+    assign = np.array([t.argmax(1) for t in Ts_all])
+    changed = (assign[1:] != assign[:-1]).any(1)
+    last = int(np.where(changed)[0].max()) + 1 if changed.any() else min(200, n_epochs - 1)
+    idx = np.unique(np.concatenate([
+        np.linspace(0, last, max_active_frames).astype(int),
+        np.linspace(last, n_epochs - 1, tail_frames).astype(int)]))
+    order = np.argsort(assign[-1])
+    frames = [Ts_all[i][order] for i in idx]
+    met = np.array([hard_metrics(Ts_all[i]) for i in idx])
+
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.5], hspace=0.32, wspace=0.25)
+    axT, axL, axM = fig.add_subplot(gs[:, 0]), fig.add_subplot(gs[0, 1]), fig.add_subplot(gs[1, 1])
+
+    im = axT.imshow(frames[0], aspect='auto', cmap='Blues', vmin=0, vmax=1,
+                    interpolation='nearest')
+    axT.set_xlabel('cluster')
+    axT.set_ylabel('low-level node (sorted by final cluster)')
+    fig.colorbar(im, ax=axT, fraction=0.046, label='T_soft')
+
+    E = np.arange(n_epochs)
+    for key, lab, c in [('graph_loss', 'graph (All-In)', '#d62728'),
+                        ('one_child_loss', 'one_child', '#1f77b4'),
+                        ('info_loss', 'info', '#2ca02c'),
+                        ('recon_loss', 'recon', '#9467bd')]:
+        v = history.get(key) if isinstance(history, dict) else None
+        if v is None or not len(v) or not np.any(np.asarray(v) > 0):
+            continue
+        axL.plot(E[:len(v)], np.maximum(np.asarray(v, float), 1e-8), lw=1.2, color=c, label=lab)
+    axL.set_yscale('log'); axL.set_xlim(0, n_epochs)
+    axL.set_ylabel('weighted loss'); axL.legend(fontsize=7, loc='upper right', framealpha=.9)
+    axL.set_title('training losses (as weighted in the objective)', fontsize=9)
+    vl1 = axL.axvline(0, color='k', lw=1.1)
+
+    k_offered = Ts_all[0].shape[1]
+    if as_fraction:
+        plot_v = met[:, 0] / p                  # share of variables that would be marginalised
+        plot_k = met[:, 1] / max(k_offered, 1)  # share of the cluster budget in use
+        lab_v = 'All-In violating nodes / p'
+        lab_k = f'clusters used / {k_offered} offered'
+        axM2 = axM
+    else:
+        plot_v, plot_k = met[:, 0], met[:, 1]
+        lab_v, lab_k = 'All-In violating nodes', 'clusters used'
+        axM2 = axM.twinx()
+        axM2.set_ylabel('intra-cluster mass', color='#2ca02c'); axM2.grid(False)
+    axM.plot(idx, plot_v, color='#d62728', lw=1.4, label=lab_v)
+    axM.plot(idx, plot_k, color='#7f7f7f', lw=1.4, label=lab_k)
+    axM.set_xlim(0, n_epochs); axM.set_xlabel('epoch')
+    axM.set_ylabel('fraction' if as_fraction else 'count')
+    if as_fraction:
+        axM.set_ylim(0, 1.03)
+    axM2.plot(idx, met[:, 2], color='#2ca02c', lw=1.4, ls='--', label='intra-cluster mass')
+    axM2.set_ylim(0, 1.03)
+    # with a twin axis the handles live on two axes, so merge both sets into one legend
+    handles = axM.get_legend_handles_labels()[0]
+    labels = axM.get_legend_handles_labels()[1]
+    if axM2 is not axM:
+        handles = handles + axM2.get_legend_handles_labels()[0]
+        labels = labels + axM2.get_legend_handles_labels()[1]
+    axM.legend(handles, labels, fontsize=7, loc='center right', framealpha=.9)
+    axM.set_title('hard metrics from argmax(T_soft)', fontsize=9)
+    vl2 = axM.axvline(0, color='k', lw=1.1)
+    d1 = axM.plot([idx[0]], [plot_v[0]], 'o', color='#d62728', ms=6)[0]
+    d2 = axM.plot([idx[0]], [plot_k[0]], 'o', color='#7f7f7f', ms=6)[0]
+    d3 = axM2.plot([idx[0]], [met[0, 2]], 'o', color='#2ca02c', ms=6)[0]
+    sup = fig.suptitle('', fontsize=10)
+
+    def update(f):
+        i = f // hold
+        im.set_array(frames[i])
+        e = idx[i]
+        vl1.set_xdata([e, e]); vl2.set_xdata([e, e])
+        d1.set_data([e], [plot_v[i]]); d2.set_data([e], [plot_k[i]]); d3.set_data([e], [met[i, 2]])
+        sup.set_text(f'{title}  epoch {e:5d}   |   violating nodes {int(met[i,0]):3d}   '
+                     f'clusters {int(met[i,1]):2d}   intra-mass {met[i,2]:.3f}   '
+                     f'one-child {"yes" if met[i,3] else "no"}')
+        return im, vl1, vl2, d1, d2, d3, sup
+
+    ani = animation.FuncAnimation(fig, update, frames=len(frames) * hold, blit=False)
+    os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+    ani.save(save_path, writer='pillow', fps=15)
+    plt.close(fig)
+    return save_path

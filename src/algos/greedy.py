@@ -1,9 +1,5 @@
 import numpy as np
 
-def log(msg, verbose=True):
-    if verbose:
-        print(msg)
-
 def partition_to_matrix(partition):
     p = sum(len(cluster) for cluster in partition)
     k = len(partition)
@@ -154,46 +150,6 @@ def one_child_closure(A_low, rng):
     return get_partition()
 
 
-def oc_closure(A_low, k, n_restarts=1, seed=None, return_candidates=False):
-    """
-    Takes the adjacency matrix of a connected directed graph and returns a k-cluster partition of the nodes that satisfies the One-Child condition.
-    Begin with singelton clusters and iteratively merge the children of each cluster until all clusters have at most one child.
-    If the number of clusters at the end of this process is greater than k, we first merge spouses (minimising intra-cluster edges) 
-    then we merge sinks with their parents.
-
-    Parameters:
-    -----------
-    A_low : np.ndarray
-        The adjacency matrix of a connected directed graph.
-    k : int
-        The maximum number of clusters to return.
-    n_restarts : int
-            The number of times to restart the algorithm.
-    seed : int, optional
-        The random seed for reproducibility.
-
-    Returns:
-    --------
-    partition : list of lists
-        A k-cluster partition of the nodes that satisfies the One-Child condition.
-    """
-
-    assert k > 1, "k must be greater than 1"
-
-    rng = np.random.default_rng(seed)
-    candidates = []
-
-    for _ in range(n_restarts):
-        partition = one_child_closure(A_low, rng)
-        partition = merge_spouses(A_low, partition, k)
-        partition = merge_sinks(A_low, partition, k)
-        partition = merge_fewest_edges(A_low, partition, k)
-        candidates.append((partition, intra_cluster_edges(A_low, partition)))
-
-    if return_candidates:
-        return candidates
-    return min(candidates, key=lambda x: x[1])[0]
-
 def all_in_repair(A_low, partition):
     """
     Merges a cluster containing an All-In violating node with its child cluster, until All-In holds.
@@ -253,6 +209,46 @@ def merge_fewest_edges(A_low, partition, k):
         partition = merge_clusters(partition, i, j)
         edge_counts = merge_edge_counts(edge_counts, i, j)
     return partition
+
+def oc_closure(A_low, k, n_restarts=1, seed=None, return_candidates=False):
+    """
+    Takes the adjacency matrix of a connected directed graph and returns a k-cluster partition of the nodes that satisfies the One-Child condition.
+    Begin with singelton clusters and iteratively merge the children of each cluster until all clusters have at most one child.
+    If the number of clusters at the end of this process is greater than k, we first merge spouses (minimising intra-cluster edges) 
+    then we merge sinks with their parents.
+
+    Parameters:
+    -----------
+    A_low : np.ndarray
+        The adjacency matrix of a connected directed graph.
+    k : int
+        The maximum number of clusters to return.
+    n_restarts : int
+            The number of times to restart the algorithm.
+    seed : int, optional
+        The random seed for reproducibility.
+
+    Returns:
+    --------
+    partition : list of lists
+        A k-cluster partition of the nodes that satisfies the One-Child condition.
+    """
+
+    assert k > 1, "k must be greater than 1"
+
+    rng = np.random.default_rng(seed)
+    candidates = []
+
+    for _ in range(n_restarts):
+        partition = one_child_closure(A_low, rng)
+        partition = merge_spouses(A_low, partition, k)
+        partition = merge_sinks(A_low, partition, k)
+        partition = merge_fewest_edges(A_low, partition, k)
+        candidates.append((partition, intra_cluster_edges(A_low, partition)))
+
+    if return_candidates:
+        return candidates
+    return min(candidates, key=lambda x: (abs(len(x[0]) - k), x[1]))[0]
 
 def aoc_closure(A_low, k, n_restarts=1, seed=None, return_candidates=False):
     """
@@ -356,6 +352,25 @@ def greedy_allin(A_low, k, n_candidates=100):
         pointer[pos == j] = clusters[i]
 
     return [list(np.where(pointer == c)[0]) for c in np.unique(pointer)]
+
+def random_partition(p, k, seed=None):
+    if not (1 < k <= p):
+        raise ValueError(f"Must have 1 < k <= p. Got k={k} and p={p}.")
+
+    rng = np.random.default_rng(seed)
+
+    nodes = [r for r in range(p)]
+    rng.shuffle(nodes)
+    partition = [[] for _ in range(k)]
+
+    for i in range(k):
+        partition[i].append(nodes[i])
+
+    for r in range(k,p):
+        clst_id = rng.integers(0,k)
+        partition[clst_id].append(nodes[r])
+
+    return partition
 
         
 
