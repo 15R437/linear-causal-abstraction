@@ -1,0 +1,802 @@
+[
+ {
+  "circuit": 0,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 24,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 1,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 192,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 2,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 576,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 3,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 448,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 4,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 192,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 5,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 448,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 6,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 576,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 7,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 1792,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 8,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 368,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 9,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 384,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 10,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 384,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 11,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 6144,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 12,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 608,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 13,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 608,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 14,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 21504,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 15,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 2368,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 16,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 752,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 17,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 800,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 18,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 2176,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 19,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 2304,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 20,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    0,
+    1
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 85760,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 21,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 6,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 22,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 18,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 23,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 26,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 24,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 82,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 25,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 752,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 26,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 800,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 27,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 3136,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 28,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 800,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 29,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 3072,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 30,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 2880,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ },
+ {
+  "circuit": 31,
+  "node_masks": [
+   [
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    1
+   ],
+   [
+    1,
+    1,
+    0
+   ],
+   [
+    1
+   ]
+  ],
+  "interpretations": 94720,
+  "ac_valid": 0,
+  "ac_valid_gates": []
+ }
+]

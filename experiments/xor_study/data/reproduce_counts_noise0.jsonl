@@ -1,0 +1,40 @@
+{"loss_target": 0.001, "seed": 2, "loss": 0.24993407242000104, "acc": 0.75, "converged": false, "secs": 3}
+{"loss_target": 0.01, "seed": 2, "loss": 0.24993407242000104, "acc": 0.75, "converged": false, "secs": 3}
+{"loss_target": 0.01, "seed": 1, "loss": 0.0039567425148561595, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 5}
+{"loss_target": 0.001, "seed": 1, "loss": 0.000345817187189823, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 5}
+{"loss_target": 0.01, "seed": 0, "loss": 0.006786797381937504, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 5}
+{"loss_target": 0.001, "seed": 0, "loss": 0.000918292225105688, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 5}
+{"loss_target": 0.001, "seed": 5, "loss": 0.0004472364751563873, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 3}
+{"loss_target": 0.01, "seed": 5, "loss": 0.009559339238330722, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 3}
+{"loss_target": 0.001, "seed": 3, "loss": 0.0006705787367536686, "acc": 1.0, "converged": true, "mappings_one_dir": 56, "formulas_one_dir": 10, "mappings_both_dirs": 8, "formulas_both_dirs": 2, "secs": 5}
+{"loss_target": 0.01, "seed": 3, "loss": 0.006005942611955107, "acc": 1.0, "converged": true, "mappings_one_dir": 56, "formulas_one_dir": 10, "mappings_both_dirs": 8, "formulas_both_dirs": 2, "secs": 5}
+{"loss_target": 0.01, "seed": 4, "loss": 0.009217630547937006, "acc": 1.0, "converged": true, "mappings_one_dir": 54, "formulas_one_dir": 10, "mappings_both_dirs": 16, "formulas_both_dirs": 4, "secs": 5}
+{"loss_target": 0.01, "seed": 7, "loss": 0.25016200765967367, "acc": 0.24, "converged": false, "secs": 1}
+{"loss_target": 0.001, "seed": 7, "loss": 0.25016200765967367, "acc": 0.24, "converged": false, "secs": 2}
+{"loss_target": 0.001, "seed": 4, "loss": 0.0009906250503263435, "acc": 1.0, "converged": true, "mappings_one_dir": 54, "formulas_one_dir": 10, "mappings_both_dirs": 16, "formulas_both_dirs": 4, "secs": 5}
+{"loss_target": 0.01, "seed": 6, "loss": 0.007893714681267738, "acc": 1.0, "converged": true, "mappings_one_dir": 28, "formulas_one_dir": 14, "mappings_both_dirs": 4, "formulas_both_dirs": 4, "secs": 4}
+{"loss_target": 0.01, "seed": 8, "loss": 0.004223777161678299, "acc": 1.0, "converged": true, "mappings_one_dir": 4, "formulas_one_dir": 3, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 3}
+{"loss_target": 0.01, "seed": 9, "loss": 0.007928832620382308, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 3}
+{"loss_target": 0.001, "seed": 9, "loss": 0.000811622581386473, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 3}
+{"loss_target": 0.001, "seed": 8, "loss": 0.0003218371697585098, "acc": 1.0, "converged": true, "mappings_one_dir": 4, "formulas_one_dir": 3, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 3}
+{"loss_target": 0.001, "seed": 6, "loss": 0.000862521943054162, "acc": 1.0, "converged": true, "mappings_one_dir": 20, "formulas_one_dir": 10, "mappings_both_dirs": 4, "formulas_both_dirs": 4, "secs": 5}
+{"loss_target": 0.01, "seed": 12, "loss": 0.00839291064767167, "acc": 1.0, "converged": true, "mappings_one_dir": 4, "formulas_one_dir": 3, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 3}
+{"loss_target": 0.01, "seed": 13, "loss": 0.25005464591085913, "acc": 0.3, "converged": false, "secs": 0}
+{"loss_target": 0.001, "seed": 12, "loss": 0.0008712031398317776, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 3}
+{"loss_target": 0.01, "seed": 11, "loss": 0.00615420526592061, "acc": 1.0, "converged": true, "mappings_one_dir": 6, "formulas_one_dir": 3, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 4}
+{"loss_target": 0.001, "seed": 13, "loss": 0.25005464591085913, "acc": 0.3, "converged": false, "secs": 0}
+{"loss_target": 0.001, "seed": 11, "loss": 0.000979311043920461, "acc": 1.0, "converged": true, "mappings_one_dir": 6, "formulas_one_dir": 3, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 4}
+{"loss_target": 0.01, "seed": 10, "loss": 0.0057490789447911085, "acc": 1.0, "converged": true, "mappings_one_dir": 72, "formulas_one_dir": 8, "mappings_both_dirs": 8, "formulas_both_dirs": 2, "secs": 7}
+{"loss_target": 0.001, "seed": 10, "loss": 0.00023019621658022517, "acc": 1.0, "converged": true, "mappings_one_dir": 60, "formulas_one_dir": 6, "mappings_both_dirs": 16, "formulas_both_dirs": 4, "secs": 7}
+{"loss_target": 0.001, "seed": 14, "loss": 0.0007613857902470045, "acc": 1.0, "converged": true, "mappings_one_dir": 56, "formulas_one_dir": 10, "mappings_both_dirs": 8, "formulas_both_dirs": 2, "secs": 5}
+{"loss_target": 0.01, "seed": 15, "loss": 0.003438363442546688, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 5}
+{"loss_target": 0.001, "seed": 15, "loss": 0.000927965793380281, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 5}
+{"loss_target": 0.01, "seed": 16, "loss": 0.004061962972627953, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 2}
+{"loss_target": 0.01, "seed": 14, "loss": 0.007584439462516457, "acc": 1.0, "converged": true, "mappings_one_dir": 56, "formulas_one_dir": 10, "mappings_both_dirs": 8, "formulas_both_dirs": 2, "secs": 6}
+{"loss_target": 0.001, "seed": 16, "loss": 0.0003192089352523908, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 2}
+{"loss_target": 0.001, "seed": 17, "loss": 0.0006824590360338334, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 4}
+{"loss_target": 0.01, "seed": 17, "loss": 0.0048613370046950875, "acc": 1.0, "converged": true, "mappings_one_dir": 0, "formulas_one_dir": 0, "mappings_both_dirs": 0, "formulas_both_dirs": 0, "secs": 4}
+{"loss_target": 0.01, "seed": 18, "loss": 0.006575277470983565, "acc": 1.0, "converged": true, "mappings_one_dir": 2, "formulas_one_dir": 2, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 5}
+{"loss_target": 0.001, "seed": 19, "loss": 0.0009265371860237792, "acc": 1.0, "converged": true, "mappings_one_dir": 2, "formulas_one_dir": 2, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 4}
+{"loss_target": 0.01, "seed": 19, "loss": 0.006450493936426938, "acc": 1.0, "converged": true, "mappings_one_dir": 2, "formulas_one_dir": 2, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 5}
+{"loss_target": 0.001, "seed": 18, "loss": 0.0006734636168403086, "acc": 1.0, "converged": true, "mappings_one_dir": 2, "formulas_one_dir": 2, "mappings_both_dirs": 2, "formulas_both_dirs": 2, "secs": 5}
