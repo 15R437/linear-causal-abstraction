@@ -10,11 +10,11 @@ import time
 import math
 from pathlib import Path
 
-from src.models.wrapper import hail_mary_graph, hm_iter, hc_fast, random
+from src.algos.wrapper import hail_mary_graph, hc_fast, random
 from src.utils.helper import enforce_dag, process_output, reconstruct_adj
 from src.utils.losses import abstraction_residual, graph_loss, observation_loss, intervention_loss, reconstruction_loss, reconstruction_loss_with_data
 from src.utils.generate_data import sample_by_noise_adjustment_any_order
-from src.utils.plots import plot_results
+from src.utils.plots import plot_results, plot_shared_legend
 
 def parse_data():
     try:
@@ -63,7 +63,7 @@ def parse_data():
 
     return A_low
 
-METHODS = {'hm_iter':hm_iter, 'hm_graph':hail_mary_graph, 'hc_fast':hc_fast, 'random':random}
+METHODS = {'hm_graph':hail_mary_graph, 'hc_fast':hc_fast, 'random':random}
 
 def run(A_low,k_list,num_trials=10):
     A_low = enforce_dag(A_low)
@@ -83,14 +83,14 @@ def run(A_low,k_list,num_trials=10):
             for method_name, method_fn in METHODS.items():
                 tracemalloc.start()
                 method_start = time.perf_counter()
-                T_hard, dag_mask = method_fn(A_low=A_low, k=k)
+                T_hard = method_fn(A_low=A_low, k=k)
                 runtime = time.perf_counter() - method_start
                 _, peak = tracemalloc.get_traced_memory()
                 tracemalloc.stop()
 
                 min_t = 1/(5 * math.sqrt(p))
-                        
-                S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low, E_low=E_low)
+
+                S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low)
                 A_recon = reconstruct_adj(A_high=A_high_pred,T=T_pred)
                 E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
                 abs_residual = abstraction_residual(A_low=A_low,T=T_pred,A_high=A_high_pred)
@@ -124,7 +124,7 @@ def run(A_low,k_list,num_trials=10):
 
         plot_easy_benchmark(timestamp=timestamp,save_dir= Path(folder/ "plots"))
 
-def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_iter','hm_graph','hm_graph_topo','hc_fast','random'],x_axis='k', col_var=None, row_var=None, fixed_vars={}, save_dir=None):
+def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_graph','hc_fast','random'],x_axis='k', col_var=None, row_var=None, fixed_vars={}, save_dir=None, legend_only=False, title=None):
     
     assert timestamp is not None or collate_from is not None, f"Expected either timestamp or collate_from to be specified."
 
@@ -159,16 +159,24 @@ def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, appr
         no_random_methods = approaches[:]
         if 'random' in approaches:
             no_random_methods.remove('random')
-    
-        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='runtime', row=row_var, col=col_var, ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='memory', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss_data', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='surjective', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='marginalisation', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir)
+
+        # exact-recovery rate: both observation and intervention losses ~ 0
+        results_df['accuracy'] = ((results_df['obs_loss'] < 1e-8) & (results_df['intv_loss'] < 1e-8)).astype(int)
+
+        plot_shared_legend(results_df=results_df, approaches=approaches, save_dir=save_dir)
+        if legend_only:
+            return
+
+        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='runtime', row=row_var, col=col_var, ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='memory', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss_data', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='surjective', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='marginalisation', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='accuracy', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
         #plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var)
     else:
         print("No CSV files found in the directory.")
@@ -182,7 +190,10 @@ if __name__ == "__main__":
     if RUN:
         run(A_low=A_low,k_list=list(range(6,12,2)))
     if PLOT:
-        plot_easy_benchmark(collate_from="20260629-130000")
+        # latest run: single k-sweep over the full p = 172 Leontief graph
+        plot_easy_benchmark(timestamp="20260806-001206", approaches=['hm_graph','hc_fast','random','uca'],
+                            col_var=None, title=f"p = {p}",
+                            save_dir="results/leontiff/_collated_plots", legend_only=False)
     
 
     

@@ -4,37 +4,21 @@ sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 from pathlib import Path
 import tracemalloc
-import math
 import time
-import torch
 import numpy as np
 import pandas as pd
 import itertools
 import yaml
-from src.utils.generate_data import generate_easy_benchmark, sample_low_level_graph, sample_by_noise_adjustment_any_order
+from src.utils.generate_data import sample_low_level_graph, sample_by_noise_adjustment_any_order
 from src.utils.helper import enforce_dag, get_A_high, get_S, reconstruct_adj, process_output
 from src.utils.losses import abstraction_residual, observation_loss, intervention_loss, graph_loss, reconstruction_loss, reconstruction_loss_with_data
-from src.models.wrapper import hc_abs, hc_fast, hc_binary, random, hail_mary_graph_intv, hail_mary_graph, hail_mary_intv, uca, hm_iter_dfs
-from src.utils.plots import plot_matrix, plot_results, plot_assignment_raster
-
-def flip_T(T_gt, flip_prop, seed=None):
-    rng = np.random.default_rng(seed)
-    n_low, n_high = T_gt.shape
-    num_flips = int(n_low * flip_prop)
-    flip_indices = rng.choice(n_low, size=num_flips, replace=False)
-    T_init = T_gt.copy()
-    T_init[flip_indices] = 1 - T_init[flip_indices]
-    return torch.from_numpy(T_init).float()
+from src.models.wrapper import hail_mary_graph, uca, hc_fast, random
+from src.utils.plots import plot_results, plot_shared_legend
 
 METHODS = {'hm_graph': hail_mary_graph,
-           'hm_iter_dfs': hm_iter_dfs,
-           'hm_intv': hail_mary_intv,
-           'hm_graph_intv': hail_mary_graph_intv,
            'uca': uca,
-           'hc_fast': hc_fast, 'hc_binary': hc_binary, 'hc_abs': hc_abs,
+           'hc_fast': hc_fast,
            'random': random}
-
-data_generating_methods = {'easy': generate_easy_benchmark, 'standard':sample_low_level_graph}
 
 # regime = (n_low, n_high, k_list, method_name_list)
 regimes = [(10*n_high, n_high, list(range(n_high, 10*n_high + 1, n_high)),['hm_graph','uca','hc_fast','random']) for n_high in [5,10,15,20]
@@ -57,8 +41,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
         yaml.dump(config,f)
     
     filename = folder / "metrics.csv"
-    header_written = False 
-    results = []
+    header_written = False
     for n in range(num_trials):
         start_time = time.time()
         for regime, density, blockiness, het, internal_density in itertools.product(regime_list, density_list, blockiness_list, heterogeneity_list, internal_density_list):
@@ -68,7 +51,6 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
             internal_density = internal_density if internal_density is not None else 0.
             het = het if het is not None else 0.1
             A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False, graph_type='one_child')
-            T_init = None #if flip_prop is None else flip_T(T_gt, flip_prop)
             E_low = np.linalg.inv(np.eye(n_low) - A_low)
             X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=None)
 
@@ -89,7 +71,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                         T_hard = np.zeros_like(T_hard)
                         T_hard[:, col_indices] = 1.
                         #T_pred = T_pred * T_hard
-                        S_pred = get_S(A_low=A_low, T=T_pred)
+                        S_pred = get_S(E_low=E_low, T=T_pred)
                         A_high_pred = enforce_dag(get_A_high(A_low=A_low, T=T_pred))
                     else:
                         S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low)
@@ -116,7 +98,6 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                                     'recon_loss': reconstruction_loss(A_low=A_low, T=T_pred, A_high=A_high_pred, A_hat=A_recon),
                                     'recon_loss_data':reconstruction_loss_with_data(A_low=A_low, A_high=A_high_pred, A_hat=A_recon, X=X_test, T=T_pred)
                                     }]
-                    results.extend(new_result)
                     df_batch = pd.DataFrame(new_result)
                     df_batch.to_csv(
                         filename, 
@@ -131,7 +112,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
         plot_easy_benchmark(timestamp=timestamp,save_dir= Path(folder/ "plots"), approaches=method_name_list)
 
     
-def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_intv','hm_graph_intv','uca','hc_fast','random'],x_axis='k', col_var='n_high', row_var=None, fixed_vars={}, save_dir=None):
+def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, approaches=['hm_graph','uca','hc_fast','random'],x_axis='k', col_var='n_high', row_var=None, fixed_vars={}, save_dir=None, legend_only=False, title=None):
     
     assert timestamp is not None or collate_from is not None, f"Expected either timestamp or collate_from to be specified."
 
@@ -166,16 +147,24 @@ def plot_easy_benchmark(timestamp = "20260528-120000", collate_from = None, appr
         no_random_methods = approaches[:]
         if 'random' in approaches:
             no_random_methods.remove('random')
-    
-        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='runtime', row=row_var, col=col_var, ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='memory', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss_data', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='surjective', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir)
-        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='marginalisation', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir)
+
+        # exact-recovery rate: both observation and intervention losses ~ 0
+        results_df['accuracy'] = ((results_df['obs_loss'] < 1e-8) & (results_df['intv_loss'] < 1e-8)).astype(int)
+
+        plot_shared_legend(results_df=results_df, approaches=approaches, save_dir=save_dir)
+        if legend_only:
+            return
+
+        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='runtime', row=row_var, col=col_var, ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=no_random_methods, x_axis=x_axis, y_axis='memory', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='recon_loss_data', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='obs_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='intv_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var,ylog=True, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='surjective', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='marginalisation', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
+        plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='accuracy', row=row_var, col=col_var,ylog=False, fixed_vars=fixed_vars, save_dir=save_dir, title=title)
         #plot_results(results_df=results_df, approaches=approaches, x_axis=x_axis, y_axis='graph_loss', row=row_var, col=col_var)
     else:
         print("No CSV files found in the directory.")
@@ -193,5 +182,8 @@ if __name__ == '__main__':
     if EASY_BENCHMARK_RUN:
         easy_benchmark(heterogeneity_list=[1],internal_density_list=[0], blockiness_list=[0.5], num_trials=10)
     if EASY_BENCHMARK_PLOT:
-        plot_easy_benchmark(collate_from="20260709-090000", approaches=['hm_graph','uca','hc_fast','random'],x_axis='k',col_var='n_high',
-                            fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5})
+        # latest run fixes k = n_high (n_low = 10*k), so plot a single panel over k.
+        # Use one run only -- collating across runs mixes different setups/scales and blows up the error bands.
+        plot_easy_benchmark(timestamp="20260712-214422", approaches=['hm_graph','uca','hc_fast','random'],x_axis='k',col_var=None,
+                            fixed_vars={'heterogeneity':1,'internal_density':0, 'blockiness':0.5}, title="p = 10k",
+                            save_dir="results/synthetic/_collated_plots", legend_only=False)

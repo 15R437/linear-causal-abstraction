@@ -144,7 +144,8 @@ def main():
     # un-masked self-influence (get_A_high zeroes the diagonal by convention, so
     # recompute the same T.T @ (A_low @ S) product without the (1 - eye) mask)
     from src.utils.helper import get_S
-    S = get_S(T=T_pred, A_low=A_low)
+    E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
+    S = get_S(T=T_pred, E_low=E_low)
     AS = A_low @ S
     A_high_full = T_pred.T @ AS
     self_core = A_high_full[core_c, core_c]
