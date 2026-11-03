@@ -29,6 +29,16 @@ MANIFEST
 results/**
 data/**
 
+# study figures: keep the PNGs the READMEs embed, drop the regenerable vector copies
+experiments/**/figures/*.pdf
+experiments/**/figures/*.npz
+
+# exploratory study: keep the scripts and notes, drop the regenerable outputs
+experiments/archive/figures/
+experiments/archive/data/
+experiments/archive/**/*.log
+experiments/archive/**/*.csv
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -208,3 +218,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+.DS_Store
+supplementary.zip
