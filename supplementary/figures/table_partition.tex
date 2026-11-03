@@ -1,0 +1,17 @@
+\begin{table}[t]
+\centering
+\footnotesize
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Method & All-In & 1-child & info \\
+\midrule
+AOC Closure & $\mathbf{1.000}$ & $\mathbf{1.000}$ & $0.374$ \\
+OC Closure & $0.695$ & $\mathbf{1.000}$ & $0.572$ \\
+Greedy All-In & $\mathbf{1.000}$ & $0.209$ & $\mathbf{1.000}$ \\
+\midrule
+\textit{ground truth} & $1.000$ & $0.350$ & $1.000$ \\
+\bottomrule
+\end{tabular}
+\caption{Median values of different partition-learning algorithms over $n=40$ instances of low-level graphs with ground truth abstractions to a $k^{*}=10$ variable model. Density is fixed at $0.5$, $p=100$, blockiness $0.8$ and budget $k\leq20$. All-In quantifies the proportion of node pairs that satisfy the All-In condition. Similarly $1$-child gives the proportion of clusters with at most one child and \textit{info}, the proportion of low-level edges that are not within clusters. All three columns are a fraction of the ideal, $1.000$ best; \textbf{bold} is the best learner. Note that the One-Child condition is not a property of the generating partition, which scores only $0.350$ on it. Both OC Closure and Greedy All-In break ties by minimising intra-cluster edge mass.}
+\label{tab:partition}
+\end{table}

@@ -1,0 +1,124 @@
+% ---------------------------------------------------------------------------
+% OCC-AC pseudocode.  Preamble requirements (ICLR style file is compatible):
+%   \usepackage{algorithm}
+%   \usepackage{algpseudocode}   % algorithmicx
+%   \usepackage{amsmath,amssymb}
+% Optional, for tighter float placement inside the ICLR two-column-free layout:
+%   \usepackage{float}
+% ---------------------------------------------------------------------------
+
+% ----- notation macros (put these in the preamble) -------------------------
+\newcommand{\Gl}{\mathcal{G}}                 % low-level graph
+\newcommand{\Pt}{\Pi}                         % partition
+\newcommand{\quo}[2]{#1 / #2}                 % quotient
+\newcommand{\ch}{\operatorname{ch}}           % children in the quotient
+\newcommand{\pa}{\operatorname{pa}}
+\newcommand{\supp}{\operatorname{supp}}
+\newcommand{\Allin}{\textsc{All-In}}
+\newcommand{\Onechild}{\textsc{One-Child}}
+% ---------------------------------------------------------------------------
+
+\begin{algorithm}[t]
+\caption{\textsc{OneChildClosure} -- finest \Onechild{} coarsening of the discrete partition}
+\label{alg:occ}
+\begin{algorithmic}[1]
+\Require low-level adjacency $A \in \mathbb{R}^{p \times p}$; random stream $\rho$
+\Ensure a partition $\Pt$ of $V$ in which every block has at most one child block
+\State $\Pt \gets \{\{1\},\dots,\{p\}\}$ \Comment{discrete partition}
+\Repeat
+  \State $\mathcal{B} \gets \textsc{Shuffle}(\Pt, \rho)$ \Comment{block visit order; the closure is order-dependent}
+  \For{$X \in \mathcal{B}$}
+    \State $\ch(X) \gets \{\, Y \in \Pt : Y \neq X,\ \exists\, i \in X,\, j \in Y,\ A_{ij} \neq 0 \,\}$
+    \If{$|\ch(X)| > 1$}
+      \State $\Pt \gets \bigl(\Pt \setminus \ch(X)\bigr) \cup \Bigl\{ \textstyle\bigcup_{Y \in \ch(X)} Y \Bigr\}$
+      \Comment{merge all children of $X$}
+    \EndIf
+  \EndFor
+\Until{no merge occurred in the last sweep}
+\State \Return $\Pt$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{\textsc{AllInCoarsening} -- repair \Allin{} by contracting violating edges}
+\label{alg:aic}
+\begin{algorithmic}[1]
+\Require adjacency $A$; a partition $\Pt$ satisfying \Onechild{}
+\Ensure a coarsening of $\Pt$ satisfying \Allin{} and \Onechild{}
+\State $m \gets 0$
+\While{$\exists\, X \to Y$ in $\quo{\Gl}{\Pt}$ and $i \in X$ with $A_{i,Y} = 0$}
+  \Comment{$i$ violates \Allin{}}
+  \State $\Pt \gets \bigl(\Pt \setminus \{X, Y\}\bigr) \cup \{X \cup Y\}$ \Comment{contract $X \to Y$}
+  \State $m \gets m + 1$
+\EndWhile
+\State \Return $\Pt$, $m$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{\textsc{OCC-AC} -- One-Child Closure with \Allin{} Coarsening}
+\label{alg:occac}
+\begin{algorithmic}[1]
+\Require adjacency $A \in \mathbb{R}^{p\times p}$; number of restarts $R$ (default $R = 12$)
+\Ensure a partition $\Pt^\star$ satisfying \Allin{}, \Onechild{} and acyclicity of $\quo{\Gl}{\Pt^\star}$
+\State $\mathcal{V} \gets \emptyset$ \Comment{valid draws}
+\For{$r = 1, \dots, R$}
+  \State $\Pt_r \gets \textsc{OneChildClosure}(A, \rho_r)$
+  \If{$\textsc{Valid}(A, \Pt_r)$} \Comment{all three conditions hold}
+    \State $\mathcal{V} \gets \mathcal{V} \cup \{\Pt_r\}$
+  \EndIf
+\EndFor
+\If{$\mathcal{V} \neq \emptyset$}
+  \State $\Pt^\star \gets \arg\max_{\Pt \in \mathcal{V}} |\Pt|$ \Comment{finest feasible $\Rightarrow$ most high-level variables}
+\Else
+  \State $\Pt^\star, m \gets \textsc{AllInCoarsening}\bigl(A,\ \arg\max_{r} |\Pt_r|\bigr)$
+\EndIf
+\State \Return $\Pt^\star$
+\Statex
+\Procedure{Valid}{$A, \Pt$}
+  \State $M \gets$ quotient adjacency of $\Pt$: $M_{XY} = \mathbf{1}\{X \neq Y,\ \exists\, i \in X,\, j \in Y,\ A_{ij} \neq 0\}$
+  \State $a \gets \bigwedge_{X}\bigwedge_{Y:\, M_{XY}=1}\bigwedge_{i \in X} \mathbf{1}\{A_{i,Y} \neq 0\}$
+  \Comment{\Allin{}}
+  \State $c \gets \mathbf{1}\{\max_X \sum_Y M_{XY} \le 1\}$ \Comment{\Onechild{}}
+  \State $d \gets \mathbf{1}\{M \text{ is acyclic}\}$
+  \State \Return $a \wedge c \wedge d$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+% ---------------------------------------------------------------------------
+% Notation paragraph to place before the algorithms in the paper body.
+% ---------------------------------------------------------------------------
+\paragraph{Notation.}
+Let $\Gl = (V, E)$ be the low-level graph on $|V| = p$ nodes with weighted adjacency
+$A \in \mathbb{R}^{p \times p}$, where $A_{ij} \neq 0$ iff $i \to j$.
+A partition $\Pt = \{X_1, \dots, X_K\}$ of $V$ induces the \emph{quotient}
+$\quo{\Gl}{\Pt}$ with an edge $X \to Y$ whenever $X \neq Y$ and some $i \in X$ has
+$A_{ij} \neq 0$ for some $j \in Y$; we write $\ch(X)$ for the children of $X$ in the
+quotient and abbreviate $A_{i,Y} \neq 0$ for ``$i$ has an edge into some member of $Y$''.
+Two conditions govern the construction:
+\begin{align}
+  \Onechild: &\quad |\ch(X)| \le 1 \quad \text{for every } X \in \Pt,
+  \label{eq:onechild}\\
+  \Allin:    &\quad A_{i,Y} \neq 0 \quad \text{for every edge } X \to Y \text{ of } \quo{\Gl}{\Pt} \text{ and every } i \in X.
+  \label{eq:allin}
+\end{align}
+
+% ---------------------------------------------------------------------------
+% Notes to fold into the surrounding text (not part of the floats).
+% ---------------------------------------------------------------------------
+\paragraph{Correctness and cost.}
+Both stages of Algorithm~\ref{alg:occac} only ever \emph{merge} blocks, so
+$\Pt^\star$ is a coarsening of the discrete partition and the map
+$A \mapsto \Pt^\star$ is a closure operator on the partition lattice.
+Algorithm~\ref{alg:occ} terminates because every sweep that changes $\Pt$ strictly
+decreases $|\Pt|$, and it returns the finest \Onechild{} coarsening reachable under the
+chosen visit order.
+Algorithm~\ref{alg:aic} terminates for the same reason: a single contraction need not
+repair the violation locally, since $Z = X \cup Y$ inherits $Y$'s child $W$ and members of
+$X$ need not reach $W$; but each contraction reduces $|\Pt|$ by one, so the loop halts after
+at most $K - 1$ steps, in the worst case at the single-block partition, which satisfies
+\eqref{eq:allin} vacuously.
+Contraction preserves \Onechild{} ($\ch(Z) = \{W\}$) and preserves acyclicity, since
+contracting $X \to Y$ could only create a cycle through a second path $X \to \cdot \to Y$,
+which \eqref{eq:onechild} forbids.

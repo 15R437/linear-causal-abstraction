@@ -1,0 +1,63 @@
+% Requires: \usepackage{tikz}  \usetikzlibrary{arrows.meta}
+% Colours match plots.visualize_causal_graph (red positive, navy negative).
+\definecolor{hlpos}{HTML}{D62728}
+\definecolor{hlneg}{HTML}{1F3B73}
+
+\definecolor{hlc0}{HTML}{0F8B8D}
+\definecolor{hlc1}{HTML}{E08214}
+\definecolor{hlc2}{HTML}{7B3294}
+\definecolor{hlc3}{HTML}{8C6D31}
+\definecolor{hlc4}{HTML}{7F7F7F}
+\definecolor{hlc5}{HTML}{17BECF}
+\definecolor{hlc6}{HTML}{BCBD22}
+
+\begin{tikzpicture}[
+    node distance=0pt,
+    every node/.style={font=\scriptsize},
+    cl/.style={circle, draw=white, line width=0.6pt, fill=#1, text=white, inner sep=0pt},
+    hl/.style={-{Stealth[length=1.6mm]}, line width=#1},
+  ]
+  %% AOC Closure
+  \node[cl={hlc0}, minimum size=0.43cm] (n0) at (2.50,-0.00) {};
+  \node[cl={hlc1}, minimum size=0.51cm] (n1) at (1.25,-2.10) {};
+  \node[cl={hlc2}, minimum size=0.72cm] (n2) at (0.00,-0.00) {};
+  \node[cl={hlc3}, minimum size=0.80cm] (n3) at (-2.50,-0.00) {};
+  \node[cl={hlc4}, minimum size=1.40cm] (n4) at (-1.25,-2.10) {};
+  \node[above=1mm of n0, align=center] {Extraction of natural gas\\(1 sectors)};
+  \node[below=1mm of n1, align=center] {Collection\\(3 sectors)};
+  \node[above=1mm of n2, align=center] {Manufacture of gas\\(13 sectors)};
+  \node[above=1mm of n3, align=center] {Manufacture of fabricated\\(19 sectors)};
+  \node[below=1mm of n4, align=center] {Landfill of waste: Wood\\(97 sectors)};
+  \draw[hl=1.40pt, hlpos] (n0) -- (n1);
+  \draw[hl=0.43pt, hlpos] (n2) -- (n4);
+  \draw[hl=0.44pt, hlpos] (n3) -- (n4);
+\end{tikzpicture}
+% AOC Closure: RAE 6.5e-17, ReconErr 0.971, Intra-Cluster Edges 0.613, 5 clusters, 7 marginalised, 3 edges
+
+\begin{tikzpicture}[
+    node distance=0pt,
+    every node/.style={font=\scriptsize},
+    cl/.style={circle, draw=white, line width=0.6pt, fill=#1, text=white, inner sep=0pt},
+    hl/.style={-{Stealth[length=1.6mm]}, line width=#1},
+  ]
+  %% Greedy All-In
+  \node[cl={hlc0}, minimum size=1.48cm] (n0) at (0.00,-4.20) {};
+  \node[cl={hlc1}, minimum size=0.54cm] (n1) at (-1.25,-0.00) {};
+  \node[cl={hlc2}, minimum size=0.72cm] (n2) at (0.00,-6.30) {};
+  \node[cl={hlc3}, minimum size=0.48cm] (n3) at (0.00,-2.10) {};
+  \node[cl={hlc4}, minimum size=0.43cm] (n4) at (1.25,-0.00) {};
+  \node[above=1mm of n0, align=center] {Cultivation of plant-based\\(112 sectors)};
+  \node[above=1mm of n1, align=center] {Extraction of crude\\(4 sectors)};
+  \node[below=1mm of n2, align=center] {Operating surplus:\\(13 sectors)};
+  \node[above=1mm of n3, align=center] {Manufacture of gas\\(2 sectors)};
+  \node[above=1mm of n4, align=center] {Financial intermediation\\(1 sectors)};
+  \draw[hl=1.40pt, hlpos] (n0) -- (n2);
+  \draw[hl=0.38pt, hlpos] (n1) -- (n0);
+  \draw[hl=0.50pt, hlpos] (n1) -- (n2);
+  \draw[hl=0.34pt, hlpos] (n3) -- (n0);
+  \draw[hl=0.33pt, hlpos] (n4) -- (n0);
+  \draw[hl=0.42pt, hlpos] (n4) -- (n2);
+  \draw[hl=0.30pt, hlpos] (n4) -- (n3);
+\end{tikzpicture}
+% Greedy All-In: RAE 2.9e-09, ReconErr 0.912, Intra-Cluster Edges 0.192, 5 clusters, 8 marginalised, 7 edges
+

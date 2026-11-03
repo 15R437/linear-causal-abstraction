@@ -1,0 +1,89 @@
+% Three partition learners, full column width.
+% Preamble: \usepackage[ruled,vlined,linesnumbered]{algorithm2e} \usepackage{float}
+% -----------------------------------------------------------------------------
+\begin{algorithm}[H]
+\SetAlgoLined\DontPrintSemicolon
+\SetKwFunction{OCC}{OneChildClosure}
+\SetKwProg{Fn}{Function}{:}{}
+\caption{\textsc{OC Closure} -- the One-Child partition that buries the least edge mass}
+\label{alg:oc}
+\KwIn{low-level adjacency $\mathbf{A}\in\mathbb{R}^{p\times p}$; number of draws $d$}
+\KwOut{a partition $\pi^{\star}$ in which every cluster has at most one child cluster}
+$\pi^{\star}\leftarrow\varnothing$;\quad $\ell^{\star}\leftarrow\infty$\;
+\For{$t=1,\dots,d$}{
+  $\pi\leftarrow$ \OCC{$\mathbf{A}$}
+    \tcp*{the closure is order-dependent, so each draw may differ}
+  \If{$\mathrm{Intra}(\pi)<\ell^{\star}$}{
+    $\pi^{\star}\leftarrow\pi$;\quad $\ell^{\star}\leftarrow\mathrm{Intra}(\pi)$
+      \tcp*{$\mathrm{Intra}$: fraction of $|\mathbf{A}|$ edge mass inside clusters}
+  }
+}
+\Return $\pi^{\star}$\;
+\BlankLine
+\Fn{\OCC{$\mathbf{A}$}}{
+  $\pi\leftarrow\{\{1\},\dots,\{p\}\}$ \tcp*{start from singletons}
+  \Repeat{no merge occurred in the last sweep}{
+    \ForEach{cluster $\mathbf{X}\in\pi$, visited in random order}{
+      $\mathcal{C}\leftarrow\{\mathbf{Y}\in\pi:\mathbf{Y}\neq\mathbf{X},\ \exists$ an edge from $\mathbf{X}$ into $\mathbf{Y}\}$
+        \tcp*{the children of $\mathbf{X}$}
+      \lIf{$|\mathcal{C}|>1$}{replace all clusters in $\mathcal{C}$ by their union}
+    }
+  }
+  \Return $\pi$ \tcp*{every cluster now has at most one child}
+}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\SetAlgoLined\DontPrintSemicolon
+\SetKwFunction{OCC}{OneChildClosure}
+\caption{\textsc{AOC Closure} -- the widest One-Child partition that also satisfies All-In}
+\label{alg:aoc}
+\KwIn{$\mathbf{A}$; number of draws $d$; optional cluster budget $k$}
+\KwOut{a partition $\pi_{0}$ satisfying both All-In and One-Child}
+$\pi_{\mathrm{valid}}\leftarrow\varnothing$;\quad $\pi_{\mathrm{wide}}\leftarrow\varnothing$
+  \tcp*{$|\varnothing|:=0$}
+\For{$t=1,\dots,d$}{
+  $\pi\leftarrow$ \OCC{$\mathbf{A}$}\;
+  \lIf{$|\pi|>|\pi_{\mathrm{wide}}|$}{$\pi_{\mathrm{wide}}\leftarrow\pi$
+    \tcp*[f]{widest draw seen}}
+  \lIf{$\mathrm{AllIn}(\pi)$ \textbf{and} $|\pi|>|\pi_{\mathrm{valid}}|$}{$\pi_{\mathrm{valid}}\leftarrow\pi$
+    \tcp*[f]{\dots\ and also All-In}}
+}
+\uIf{$\pi_{\mathrm{valid}}\neq\varnothing$}{
+  $\pi_{0}\leftarrow\pi_{\mathrm{valid}}$ \tcp*{some draw was already All-In: no repair needed}
+}
+\Else{
+  $\pi_{0}\leftarrow\pi_{\mathrm{wide}}$ \tcp*{no draw was All-In: repair the widest one}
+  \While{\textnormal{some quotient edge} $\mathbf{X}\!\to\!\mathbf{Y}$ \textnormal{has a member of} $\mathbf{X}$
+         \textnormal{with no edge into} $\mathbf{Y}$}{
+    $\pi_{0}\leftarrow\mathrm{merge}(\mathbf{X},\mathbf{Y})$
+      \tcp*{$|\pi_{0}|$ drops by one, so the loop terminates}
+  }
+}
+\lIf{$k$ \textnormal{is given}}{$\pi_{0}\leftarrow\textsc{Coarsen}(\pi_{0},k)$
+  \tcp*[f]{condition-preserving merges down to $k$}}
+\Return $\pi_{0}$\;
+\end{algorithm}
+
+\begin{algorithm}[H]
+\SetAlgoLined\DontPrintSemicolon
+\caption{\textsc{Greedy All-In} -- merge to the budget, minimising All-In violations}
+\label{alg:greedy}
+\KwIn{$\mathbf{A}$; cluster budget $k$; shortlist size $c$}
+\KwOut{a partition $\pi$ with $|\pi|=k$}
+$\pi\leftarrow\{\{1\},\dots,\{p\}\}$ \tcp*{singletons satisfy All-In vacuously}
+$\boldsymbol{\Sigma}\leftarrow$ Jaccard similarity between the out-neighbourhoods of each pair of nodes\;
+\While{$|\pi|>k$}{
+  $\mathcal{P}\leftarrow$ the $c$ most similar cluster pairs under $\boldsymbol{\Sigma}$
+    \tcp*{shortlist}
+  \ForEach{$(\mathbf{X},\mathbf{Y})\in\mathcal{P}$}{
+    $\pi'\leftarrow\mathrm{merge}(\mathbf{X},\mathbf{Y})$\;
+    $\mathrm{score}(\mathbf{X},\mathbf{Y})\leftarrow\big(V(\pi'),\ \Delta\mathrm{Intra}(\pi')\big)$
+      \tcp*{$V$: number of All-In violations; ties broken by added intra-cluster mass}
+  }
+  $(\mathbf{X}^{\star},\mathbf{Y}^{\star})\leftarrow$ the pair of $\mathcal{P}$ minimising $\mathrm{score}$
+    lexicographically\;
+  $\pi\leftarrow\mathrm{merge}(\mathbf{X}^{\star},\mathbf{Y}^{\star})$\;
+}
+\Return $\pi$\;
+\end{algorithm}

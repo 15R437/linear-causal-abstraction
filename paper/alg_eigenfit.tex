@@ -1,0 +1,47 @@
+\begin{algorithm}[H]
+\SetAlgoLined\DontPrintSemicolon
+\SetKwFunction{Propagate}{Propagate}
+\SetKwProg{Fn}{Function}{:}{}
+\caption{Abstraction fit: cycles pinned by an eigenproblem, sinks optimised}\label{alg:eigenfit}
+\KwIn{low-level adjacency $\mathbf{A}\in\mathbb{R}^{p\times p}$; hard partition $\{\pi_1,\dots,\pi_k\}$; restarts $R$}
+\KwOut{high-level adjacency $\tilde{\mathbf{A}}\in\mathbb{R}^{k\times k}$; abstraction $\mathbf{T}\in\mathbb{R}^{p\times k}$}
+\BlankLine
+$\mathcal{Q}\leftarrow \{(i,j): i\neq j,\ \mathbf{A}_{\pi_i\pi_j}\neq\mathbf{0}\}$ \tcp*{quotient edges}
+\lForEach{$(i,j)\in\mathcal{Q}$}{$\mathbf{M}_{ij}\leftarrow \mathbf{A}_{\pi_i\pi_j}\big(\mathbf{I}-\mathbf{A}_{\pi_j\pi_j}\big)^{-1}$}
+$\mathcal{C}_1,\dots,\mathcal{C}_r\leftarrow\textsc{StronglyConnectedComponents}(\mathcal{Q})$\;
+order $\mathcal{C}_1,\dots,\mathcal{C}_r$ so each follows every component it points into\;
+\BlankLine
+\tcp{Phase 1 -- cyclic SCCs are pinned and do not depend on the sinks, so solve them once}
+\ForEach{$\mathcal{C}$ \textnormal{with} $|\mathcal{C}|>1$ \textbf{or} \textnormal{a self-loop}}{
+  \ForEach{$i\in\mathcal{C}$}{
+    $(i=c_1,c_2,\dots,c_m)\leftarrow$ shortest simple cycle through $i$ inside $\mathcal{C}$\;
+    $\boldsymbol{\Pi}\leftarrow \mathbf{M}_{c_1c_2}\mathbf{M}_{c_2c_3}\cdots\mathbf{M}_{c_mc_1}$\;
+    $t_i\leftarrow$ unit eigenvector of $\boldsymbol{\Pi}$ for the largest-magnitude eigenvalue\;
+  }
+}
+\BlankLine
+\tcp{Phase 2 -- the sink directions are the only free parameters}
+$\mathcal{S}\leftarrow\{i: \mathcal{C}=\{i\}$ acyclic, $\nexists\,j\ (i,j)\in\mathcal{Q}\}$;\quad $n\leftarrow\sum_{i\in\mathcal{S}}|\pi_i|$\;
+\eIf{$n=0$}{
+  $(t,\rho)\leftarrow$ \Propagate{$\varnothing$} \tcp*{no sinks: closed form, $R$ unused}
+}{
+  $x^{\star}\leftarrow\arg\min_{x\in\mathbb{R}^{n}}\rho(x)$, where $\rho(x)$ is returned by \Propagate{$x$},\;
+  \quad by SLSQP from $R$ random starts, keeping the best\;
+  $(t,\rho)\leftarrow$ \Propagate{$x^{\star}$}\;
+}
+\BlankLine
+$\tilde{A}_{ij}\leftarrow\langle\mathbf{M}_{ij}t_j,\,t_i\rangle/\langle t_i,t_i\rangle$ for $(i,j)\in\mathcal{Q}$, and $0$ otherwise\;
+$\mathbf{T}\leftarrow$ the $p\times k$ matrix with $t_i$ placed on rows $\pi_i$ of column $i$\;
+\Return $\tilde{\mathbf{A}},\mathbf{T}$\;
+\BlankLine
+\Fn{\Propagate{$x$}}{
+  \lForEach{$i\in\mathcal{S}$}{$t_i\leftarrow x_{\pi_i}/\|x_{\pi_i}\|$ \tcp*[f]{sink block of $x$}}
+  $\rho\leftarrow 0$\;
+  \ForEach{\textnormal{acyclic singleton} $\mathcal{C}=\{i\}$, $i\notin\mathcal{S}$, \textnormal{in order}}{
+    $\mathcal{K}\leftarrow\{j:(i,j)\in\mathcal{Q}\}$\;
+    $v_j\leftarrow\mathbf{M}_{ij}t_j/\|\mathbf{M}_{ij}t_j\|$ for $j\in\mathcal{K}$, sign-aligned to $v_{j_1}$\;
+    $t_i\leftarrow\overline{v}/\|\overline{v}\|$;\quad $\rho\leftarrow\rho+\sum_{j}\|v_j-t_i\|^2$ \tcp*{collinearity disagreement}
+  }
+  \Return $t,\rho$\;
+}
+\end{algorithm}

@@ -1,0 +1,28 @@
+\begin{algorithm}[H]
+\SetAlgoLined\DontPrintSemicolon
+\caption{$\mathbf{T}$-concretisation sampling}\label{alg:datagen}
+\KwIn{high-level $\tilde{\mathbf{A}}\in\mathbb{R}^{k\times k}$; abstraction $\mathbf{T}\in\mathbb{R}^{p\times k}$
+      with blocks $\pi_1,\dots,\pi_k$; internal density $\delta$; blockiness $\beta$;
+      heterogeneity $\eta$}
+\KwOut{$\mathbf{A}\in\mathbb{R}^{p\times p}$ and $\mathbf{S}$ with
+       $(\mathbf{I}-\mathbf{A})\mathbf{S}=\mathbf{T}(\mathbf{I}-\tilde{\mathbf{A}})$}
+\BlankLine
+\ForEach{$j=1,\dots,k$}{
+  $\mathbf{A}_{\pi_j\pi_j}\leftarrow$ random DAG on $|\pi_j|$ nodes at density $\delta$\;
+  $s_j\leftarrow(\mathbf{I}-\mathbf{A}_{\pi_j\pi_j})^{-1}t_j$
+    \tcp*{$t_j:=\mathbf{T}_{\pi_j,j}$; $s_j$ is block $j$ of $\mathbf{S}$}
+}
+\ForEach{$(i,j)$ \textnormal{with} $i\neq j$, $\tilde{A}_{ij}\neq0$}{
+  \ForEach{\textnormal{the} $\ell$\textnormal{-th member} $r$ \textnormal{of} $\pi_i$}{
+    $\mathcal{I}\leftarrow\{n^{\star}\}\cup\{n:b_n=1\}$,\quad
+      $n^{\star}\sim\mathcal{U}\{n:s_j[n]\neq0\}$, $b_n\sim\mathrm{Bern}(\beta)$\;
+    $c\leftarrow\mathbf{0}$;\quad
+      $c_{\mathcal{I}}\leftarrow\bar{s}/(\bar{s}^{\!\top}\bar{s})+\eta\,\epsilon$,\quad
+      $\bar{s}:=s_j[\mathcal{I}]$, $\epsilon\perp\bar{s}$, $\|\epsilon\|=1$
+      \tcp*{so $c^{\!\top}s_j=1$}
+    $\mathbf{A}_{r,\pi_j}\leftarrow \tilde{A}_{ij}\,t_i[\ell]\,c^{\!\top}$
+      \tcp*{hence $\mathbf{A}_{\pi_i\pi_j}s_j=\tilde{A}_{ij}\,t_i$}
+  }
+}
+\Return $\mathbf{A},\mathbf{S}$\;
+\end{algorithm}
