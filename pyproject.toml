@@ -20,7 +20,8 @@ Repository = "https://github.com/15R437/linear-causal-abstraction"
 #     pip install -e .
 # is what lets every module and script drop `sys.path.insert(0, os.getcwd())`, which
 # previously made each file importable only when the interpreter started at the repo root.
-packages = ["src", "src.algos", "src.utils", "experiments"]
+packages = ["src", "src.algos", "src.utils",
+            "experiments", "experiments.synthetic", "experiments.leontief"]
 
 [tool.setuptools.dynamic]
 dependencies = { file = ["requirements.txt"] }

@@ -103,7 +103,7 @@ def to_markdown(med, n):
                f'density {DENSITY}, blockiness {BLOCKINESS}, ground truth k* = 10, '
                f'{N_RESTARTS} closure restarts. '
                f'Lower is better; 0.000 is ideal. Reproduce with '
-               f'<code>python experiments/partition_table.py</code>.</sub>')
+               f'<code>python experiments/synthetic/partition_table.py</code>.</sub>')
     return '\n'.join(out)
 
 

@@ -3,7 +3,7 @@ Visualises exactly which EXIOBASE (GB) sectors GradCAP groups together on the
 real Leontief cyclic graph, and the resulting high-level causal structure.
 
 Requires data/A_low.npy and data/A_low_labels.pkl (sector/factor names in the
-same row order as A_low), both produced by experiments/leontief.py::parse_data.
+same row order as A_low), both produced by experiments/leontief/pipeline.py::parse_data.
 """
 
 import pickle
@@ -140,7 +140,7 @@ def main():
 
     # un-masked self-influence (get_A_high zeroes the diagonal by convention, so
     # recompute the same T.T @ (A_low @ S) product without the (1 - eye) mask)
-    from src.utils.helper import get_S
+    from src.utils.abstraction_algebra import get_S
     E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
     S = get_S(T=T_pred, E_low=E_low)
     AS = A_low @ S

@@ -174,7 +174,7 @@ if __name__ == "__main__":
 
     from src.utils.generate_data import sample_low_level_graph, sample_by_noise_adjustment_any_order
     from src.utils.losses import (observation_loss, intervention_loss, graph_loss, reconstruction_loss_with_data, RAE, info_effective)
-    from src.utils.helper import get_S, is_dag, reconstruct_adj
+    from src.utils.abstraction_algebra import get_S, is_dag, reconstruct_adj
     from src.utils.partition import partition_from_matrix
     from src.utils.plots import visualize_causal_graph, animate_partition_training, plot_matrix
 
@@ -261,6 +261,28 @@ if __name__ == "__main__":
     
 
 
+def _coarsen_to(partition, k):
+    """Merge clusters until at most `k` remain, so an over-fine init can still seed GradCAP.
+
+    `aoc_closure` documents that it returns MORE than k clusters when no sink has a parent,
+    which happens on a disconnected graph: the merge steps run out of moves. The unpruned
+    EXIOBASE matrix has 29 weakly connected components, so aoc_closure returns 29 clusters
+    for every k, and feeding that straight to GradCAP(k=8) raised
+    "partition_init should contain no more than 8 clusters. Got 29."
+
+    Merging the two smallest clusters repeatedly is arbitrary across components -- there are
+    no edges to guide it -- but this is only an INITIALISATION that the optimiser then moves,
+    so the choice costs nothing but keeps the caller alive. Clusters within a component are
+    untouched while any smaller pair exists, so a connected graph (where aoc_closure already
+    returns <= k) passes through unchanged.
+    """
+    clusters = [list(c) for c in partition if len(c)]
+    while len(clusters) > k:
+        clusters.sort(key=len)
+        clusters.append(clusters.pop(0) + clusters.pop(0))
+    return clusters
+
+
 def gradcap(A_low, k, n_restarts=1, seed=0):
     """Best-of-n_restarts GradCAP, returning a PARTITION (list of index arrays).
 
@@ -278,7 +300,7 @@ def gradcap(A_low, k, n_restarts=1, seed=0):
     The scoring below is genuinely matrix algebra and the torch model emits an indicator
     matrix, so T_hard is the natural type INSIDE this function; only the return is converted.
     """
-    from src.utils.helper import get_device
+    from src.utils.abstraction_algebra import get_device
     from src.utils.losses import graph_loss as _graph_loss
     from .greedy import aoc_closure
     from src.utils.partition import partition_from_matrix
@@ -291,6 +313,7 @@ def gradcap(A_low, k, n_restarts=1, seed=0):
     best, best_key = None, None
     for r in range(n_restarts):
         partition_init = aoc_closure(A_low, k, seed=seed * 1000 + r)
+        partition_init = _coarsen_to(partition_init, k)
         model = GradCAP(A_low_tensor, k, partition_init, seed=seed * 1000 + r).to(device)
         model.train(num_epochs=num_epochs, verbose=False)
         T_hard = model.get_partition()[0].cpu().detach().numpy()

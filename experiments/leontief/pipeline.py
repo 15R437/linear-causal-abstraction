@@ -9,7 +9,7 @@ from pathlib import Path
 from src.algos.greedy import (aoc_closure, greedy_allin, oc_closure,
                                         random_partition)
 from src.utils.partition import all_in_violation, partition_to_matrix
-from src.utils.helper import enforce_dag, reconstruct_adj
+from src.utils.abstraction_algebra import enforce_dag, reconstruct_adj
 from src.algos.T_fitter import fit_abstraction_eigen
 from src.utils.losses import abstraction_residual, graph_loss, observation_loss, intervention_loss, reconstruction_loss, reconstruction_loss_with_data
 from src.utils.generate_data import sample_by_noise_adjustment_any_order

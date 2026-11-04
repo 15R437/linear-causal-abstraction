@@ -1,12 +1,25 @@
 from pathlib import Path
 import tracemalloc
 import time
+import argparse
+import os
+
+# One BLAS thread. The fitter's matrices are cluster-sized (c x c for c ~ p/k, so 10 x 10
+# here), and on blocks that small the threaded BLAS spends more time coordinating threads
+# than doing arithmetic -- it was observed at 655% CPU while running 16x SLOWER than a single
+# thread (p=140, k=14: 145.15s -> 8.91s, with bit-identical RAE). Set before numpy is
+# imported, which is when the thread pool is sized; setdefault so an explicit outer value
+# still wins.
+for _v in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+           'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS'):
+    os.environ.setdefault(_v, '1')
+
 import numpy as np
 import pandas as pd
 import itertools
 import yaml
 from src.utils.generate_data import sample_low_level_graph, sample_by_noise_adjustment_any_order
-from src.utils.helper import enforce_dag, get_A_high, get_S, reconstruct_adj
+from src.utils.abstraction_algebra import enforce_dag, get_A_high, get_S, reconstruct_adj
 from src.utils.losses import abstraction_residual, observation_loss, intervention_loss, graph_loss, reconstruction_loss, reconstruction_loss_with_data, RAE
 from src.algos.T_fitter import fit_abstraction_eigen
 from src.algos.greedy import (aoc_closure, greedy_allin, oc_closure,
@@ -23,7 +36,7 @@ from src.utils.plots import plot_results, plot_shared_legend
 # orders and keeps the one with the fewest intra-cluster edges. n_restarts=1 is a different
 # (and worse) algorithm: at one draw OC Closure lands on All-In-satisfying partitions and
 # stops being distinguishable from AOC Closure. Keep this in step with
-# experiments/partition_table.py.
+# experiments/synthetic/partition_table.py.
 N_RESTARTS = 12
 
 METHODS = {'aoc_closure': lambda A_low, k, **kw: aoc_closure(A_low, k, n_restarts=N_RESTARTS),

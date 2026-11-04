@@ -2,7 +2,7 @@ import numpy as np
 from collections import deque
 from scipy.stats import gennorm
 from causabs.sampling import sample_linear_anm,sample_linear_abstraction,sample_linear_concretization
-from src.utils.helper import get_S, get_A_high
+from src.utils.abstraction_algebra import get_S, get_A_high
 import numpy as np
 from typing import Literal
 import networkx as nx

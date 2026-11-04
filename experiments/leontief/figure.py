@@ -12,9 +12,9 @@ even though the low-level graph is not: 22-31 sectors consume their own output (
 0.244, for one), so `is_dag(A_low)` is False while every SCC is a single node.
 
 Requires data/A_low.npy and data/A_low_labels.pkl, both written by
-experiments/leontief.py::parse_data.
+experiments/leontief/pipeline.py::parse_data.
 
-    python experiments/leontief_figure.py            # -> assets/fig4_leontief.png
+    python experiments/leontief/figure.py            # -> assets/fig4_leontief.png
 """
 
 import pickle
@@ -30,7 +30,7 @@ from matplotlib.patches import Circle, FancyArrowPatch
 from src.algos.greedy import aoc_closure, greedy_allin
 from src.algos.T_fitter import fit_abstraction_eigen
 from src.utils.losses import RAE, reconstruction_loss
-from src.utils.helper import reconstruct_adj
+from src.utils.abstraction_algebra import reconstruct_adj
 
 THRESH = 0.05   # prune |A| below this; the raw table is dense with negligible coefficients
 K = 5           # a drawing budget, not an experimental one: k=20 is unreadable as a picture

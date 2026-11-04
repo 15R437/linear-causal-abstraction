@@ -21,7 +21,7 @@ import torch.nn as nn
 from src.algos.T_fitter import fit_abstraction_eigen
 from src.algos.greedy import aoc_closure, greedy_allin, random_partition
 from src.utils.partition import partition_to_matrix, all_in_violation, cluster_edge_counts
-from src.utils.helper import get_S
+from src.utils.abstraction_algebra import get_S
 from src.utils.partition import partition_from_matrix
 from src.utils.losses import RAE, reconstruction_loss
 

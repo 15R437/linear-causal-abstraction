@@ -1,8 +1,20 @@
+"""Figures and training animations.
+
+None of these are on the path of the README's reproduction scripts -- those draw their own
+figures. What lives here are the diagnostics: look at an abstraction (`visualize_causal_graph`,
+`plot_matrix`), sweep a benchmark CSV (`plot_results`, `plot_shared_legend`), walk a path
+through T (`plot_probability_path`), or watch a gradient-based run converge
+(`animate_partition_training`).
+
+Every function takes `save_path`/`save_dir`; pass it and nothing is shown interactively, which
+is what you want from a script or a headless machine.
+"""
+
 import os
 
 from typing import Literal, Callable
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-import torch
 import seaborn as sns
 import numpy as np
 import networkx as nx
@@ -10,13 +22,28 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
 from matplotlib.ticker import MaxNLocator
 import matplotlib.animation as animation
-import matplotlib.cm as cm
 from itertools import combinations
-from src.utils.helper import get_S, get_A_high
+from src.utils.abstraction_algebra import get_S, get_A_high
+
+
+def _get_cmap(name, n):
+    """`matplotlib.cm.get_cmap` is deprecated in 3.7 and removed in 3.9."""
+    return mpl.colormaps[name].resampled(n)
+
 
 def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=1e-5,title='Causal Abstraction Graph',save_path=None):
-    """
-    Visualizes low-level nodes, high-level nodes, and the learned abstraction.
+    """Draw the low-level graph, the high-level graph and the abstraction that links them.
+
+    Low-level nodes are coloured by the cluster T assigns them to (grey if T leaves them in
+    no cluster), exogenous nodes by S, and edges are red for positive weights and navy for
+    negative, with opacity scaled by |weight| relative to the largest in either graph.
+
+    Args:
+        A_low, A_high: (p, p) and (k, k) adjacency matrices.
+        T_matrix, S_matrix: (p, k) endogenous and exogenous abstraction maps. Hard or soft;
+            only the sparsity pattern is read.
+        threshold: edges with |weight| at or below this are not drawn.
+        save_path: write here instead of showing. Parent directories are created.
     """
     n_low = A_low.shape[0]
     n_high = A_high.shape[0]
@@ -26,70 +53,64 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=1e-5,tit
     high_nodes_endog = [f"Y{i+1}" for i in range(n_high)]
     high_nodes_exog = [f"W{i+1}" for i in range(n_high)]
 
-    #postioning
-    # ... inside your function ...
-
-    # 1. Layout for Low-Level Graph
+    # LAYOUT. The spring layout is run on the endogenous nodes carrying the REAL edges, so
+    # position reflects graph structure. (It used to be run on an edgeless node set, which
+    # made every layout an arbitrary scatter that ignored A_low entirely.) Exogenous nodes
+    # are not laid out -- they are pinned beside their own endogenous node afterwards.
     G_low = nx.DiGraph()
     G_low.add_nodes_from(low_nodes_endog)
-    G_low.add_nodes_from(low_nodes_exog)
-    pos_low = nx.spring_layout(G_low, seed=42,scale=1.0)
-    
-    # 2. Layout for High-Level Graph
+    G_low.add_edges_from((low_nodes_endog[i], low_nodes_endog[j])
+                         for i in range(n_low) for j in range(n_low)
+                         if abs(A_low[i, j]) > threshold)
+    pos_low = nx.spring_layout(G_low, seed=42, scale=1.0)
+
     G_high = nx.DiGraph()
     G_high.add_nodes_from(high_nodes_endog)
-    G_high.add_nodes_from(high_nodes_exog)
-    pos_high = nx.spring_layout(G_high, seed=42,scale=1.0)
+    G_high.add_edges_from((high_nodes_endog[i], high_nodes_endog[j])
+                          for i in range(n_high) for j in range(n_high)
+                          if abs(A_high[i, j]) > threshold)
+    pos_high = nx.spring_layout(G_high, seed=42, scale=1.0)
     for node in pos_high:
         pos_high[node][0] += 3.0  # Shift right
 
     # Combine positions
     pos = {**pos_low, **pos_high}
+
+    def add_nearby_node(endog_pos, shift_x=-0.3,shift_y=0.3):
+        return endog_pos + np.array([shift_x, shift_y]) # Up and Left
+
+    # Pin each exogenous node beside its endogenous one. This has to happen BEFORE the level
+    # boxes are drawn, since those are sized from the positions of every node they enclose.
+    for i in range(n_low):
+        pos[low_nodes_exog[i]] = add_nearby_node(pos[low_nodes_endog[i]],
+                                                 shift_x=-0.3, shift_y=0.15)
+    for i in range(n_high):
+        pos[high_nodes_exog[i]] = add_nearby_node(pos[high_nodes_endog[i]],
+                                                  shift_x=0.4, shift_y=-0.2)
+
     fig,ax = plt.subplots(figsize=(10, 8))
     def draw_level_box(nodes, pos, color, label):
         coords = np.array([pos[node] for node in nodes])
         x_min, y_min = coords.min(axis=0) - 0.2
         x_max, y_max = coords.max(axis=0) + 0.2
         buffer = 0.4
-        rect = Rectangle((x_min-buffer, y_min-buffer), x_max - x_min + 2*buffer, y_max - y_min + 2*buffer, 
+        rect = Rectangle((x_min-buffer, y_min-buffer), x_max - x_min + 2*buffer, y_max - y_min + 2*buffer,
                          linewidth=2, edgecolor=color, facecolor=color, alpha=0.1, linestyle='--')
         ax.add_patch(rect)
-        ax.text(x_min + (x_max-x_min)/2, y_max + buffer+0.05, label, 
+        ax.text(x_min + (x_max-x_min)/2, y_max + buffer+0.05, label,
                 fontsize=12, fontweight='bold', ha='center', color=color)
 
     draw_level_box(low_nodes_endog + low_nodes_exog, pos, 'blue', 'Low-Level')
     draw_level_box(high_nodes_endog + high_nodes_exog, pos, 'purple', 'High-Level')
 
-    def add_nearby_node(endog_pos, shift_x=-0.3,shift_y=0.3):
-        return endog_pos + np.array([shift_x, shift_y]) # Up and Left
-
-    # Map low-level exog to endog
-    for i in range(n_low):
-        endog_name = low_nodes_endog[i]
-        if endog_name in pos:
-            pos[low_nodes_exog[i]] = add_nearby_node(pos[endog_name],shift_x=-0.3,shift_y=0.15)
-        else:
-            # Fallback if node has no edges
-            pos[endog_name] = np.array([0, i * 0.5])
-            pos[low_nodes_exog[i]] = add_nearby_node(pos[endog_name],shift_x=-0.3,shift_y=0.15)
-
-    # Map high-level exog to endog
-    for i in range(n_high):
-        endog_name = high_nodes_endog[i]
-        if endog_name in pos:
-            pos[high_nodes_exog[i]] = add_nearby_node(pos[endog_name],shift_x=0.4,shift_y=-0.2)
-        else:
-            # Fallback if node has no edges
-            pos[endog_name] = np.array([2.0, i * 0.5])
-            pos[high_nodes_exog[i]] = add_nearby_node(pos[endog_name],shift_x=0.4,shift_y=-0.2)
     G = nx.DiGraph()
     G.add_nodes_from(low_nodes_endog + low_nodes_exog + high_nodes_endog + high_nodes_exog)
     G.add_edges_from(G_low.edges())
     G.add_edges_from(G_high.edges())
-    
+
     #Colour nodes based on their high-level cluster assignment
-    cmap1 = cm.get_cmap('Set1',n_high)
-    cmap2 = cm.get_cmap('Pastel1',n_high)
+    cmap1 = _get_cmap('Set1', n_high)
+    cmap2 = _get_cmap('Pastel1', n_high)
     endogenous_colours = {high_nodes_endog[i]: cmap1(i) for i in range(n_high)}
     exogenous_colours = {high_nodes_exog[i]: cmap2(i) for i in range(n_high)} 
     BIN_COLOUR = '#D3D3D3'
@@ -145,10 +166,8 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=1e-5,tit
                   edgecolor='black', label=f'High-Level Endogenous Cluster {i+1}')
         )
 
-    ax.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=4)
-
     # Place legend outside the main plot area to avoid overlap
-    ax.legend(handles=legend_elements, loc='upper center', 
+    ax.legend(handles=legend_elements, loc='upper center',
               bbox_to_anchor=(0.5, -0.05), ncol=3, frameon=True)
     
     
@@ -214,7 +233,19 @@ def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=1e-5,tit
 
 
 
-def plot_matrix(matrix_list,title_list,fig_title=''):
+def plot_matrix(matrix_list,title_list,fig_title='',save_path=None):
+    """Side-by-side heatmaps on one shared diverging scale.
+
+    The scale is symmetric about zero and shared across panels, so two abstraction maps are
+    directly comparable. `None` entries are allowed and draw a blank panel, which keeps a
+    grid aligned when one method produced nothing.
+
+    Args:
+        matrix_list: 2-D arrays (or None) to draw, one panel each.
+        title_list: a title per panel; must be the same length as matrix_list.
+        fig_title: suptitle for the whole figure.
+        save_path: write here instead of showing. Parent directories are created.
+    """
     assert(len(matrix_list)==len(title_list)), f"Expected matrix_list and title_list to have the same length. Got lists of length {len(matrix_list)} and {len(title_list)}."
     n = len(matrix_list)
     if n == 1:
@@ -228,17 +259,44 @@ def plot_matrix(matrix_list,title_list,fig_title=''):
          ax = [ax]
     
 
-    global_max = np.max([np.max(np.abs(E)) for E in matrix_list if E is not None])
-    for idx,(E,title) in enumerate(zip(matrix_list,title_list)):  
-        im = ax[idx].imshow(E,cmap='bwr',vmin=-global_max,vmax=global_max,aspect='auto')
+    present = [np.max(np.abs(E)) for E in matrix_list if E is not None]
+    global_max = max(present) if present else 1.0
+    for idx,(E,title) in enumerate(zip(matrix_list,title_list)):
         ax[idx].set_title(title)
+        if E is None:
+            ax[idx].axis('off')
+            continue
+        im = ax[idx].imshow(E,cmap='bwr',vmin=-global_max,vmax=global_max,aspect='auto')
 
         fig.colorbar(im, ax=ax[idx], fraction=0.046, pad=0.04)
-    
+
     fig.suptitle(fig_title,fontsize=16,fontweight='bold')
-    plt.show()
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+        fig.savefig(save_path, dpi=160, bbox_inches='tight')
+        plt.close(fig)
+    else:
+        plt.show()
 
 def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None,col=None,ylog=False,xlog=False, save_dir=None, title=None):
+    """One metric from a benchmark CSV, as a grid of lines with one colour per method.
+
+    Reads the long-format frame that `experiments/synthetic/benchmark.py::easy_benchmark` writes: one
+    row per (method, trial, setting), with a column named for each metric and the method in
+    `Approach`.
+
+    Args:
+        results_df: the metrics frame, e.g. `pd.read_csv(folder / 'metrics.csv')`.
+        x_axis, y_axis: column names to put on each axis, e.g. 'k' and 'recon_loss'.
+        fixed_vars: {column: value} filters, applied before plotting; columns not in the
+            frame are ignored.
+        approaches: restrict to these values of `Approach`, in this order.
+        row, col: column names to facet over, e.g. row='density'.
+        ylog, xlog: log-scale either axis. With ylog, 1e-15 is added to y first so that
+            exact zeros (a machine-precision RAE) survive the transform.
+        save_dir: write `<save_dir>/<y_axis>.png` and `.pdf` instead of showing.
+        title: one title for every panel; by default each panel is titled by its facet value.
+    """
     # 1. Filter data
     df = results_df.copy()
     if approaches:
@@ -292,8 +350,8 @@ def plot_results(results_df,x_axis,y_axis,fixed_vars={},approaches=None,row=None
         plt.savefig(f"{save_dir}/{y_axis}.png", dpi=300, bbox_inches='tight')
         plt.savefig(f"{save_dir}/{y_axis}.pdf", bbox_inches='tight')
         plt.close()
-
-    plt.show()
+    else:
+        plt.show()
 
 def plot_shared_legend(results_df, approaches=None, save_dir=None, filename="legend",
                        label_map=None, ncol=None, marker='o'):
@@ -301,8 +359,18 @@ def plot_shared_legend(results_df, approaches=None, save_dir=None, filename="leg
     Renders only the 'Approach' legend shared by the plot_results panels and saves
     it as a standalone, tightly-cropped PDF (``<save_dir>/<filename>.pdf``).
 
-    The colour/order mapping is taken from an identically-constructed FacetGrid so
-    the legend always matches the per-metric figures.
+    The hue ORDER is taken from an identically-constructed FacetGrid, and the colours from
+    the same named palette it would build, so the legend always matches the per-metric
+    figures without reaching into seaborn's private attributes.
+
+    Args:
+        results_df: the metrics frame, as passed to `plot_results`.
+        approaches: restrict to these values of `Approach`.
+        save_dir: write `<save_dir>/<filename>.pdf` instead of showing.
+        filename: basename of the PDF, without the extension.
+        label_map: {value in Approach: label to display}, for prettier names.
+        ncol: legend columns; defaults to one row across.
+        marker: marker drawn on each legend line; match whatever `plot_results` used.
     """
     df = results_df.copy()
     if approaches:
@@ -311,8 +379,8 @@ def plot_shared_legend(results_df, approaches=None, save_dir=None, filename="leg
     sns.set_theme(style="whitegrid")
     grid = sns.FacetGrid(df, hue='Approach', palette='Set2')
     hue_names = list(grid.hue_names)
-    colors = list(grid._colors)
     plt.close(grid.figure)
+    colors = sns.color_palette('Set2', len(hue_names))
 
     label_map = label_map or {}
     handles = [Line2D([0], [0], color=colors[i], marker=marker, lw=1.5, markersize=6,
@@ -332,9 +400,29 @@ def plot_shared_legend(results_df, approaches=None, save_dir=None, filename="leg
     else:
         plt.show()
 
-def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,initial_T : Literal['uniform', 'compact','surjective'] = 'uniform'):
+def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,initial_T : Literal['uniform', 'compact','surjective'] = 'uniform', save_path=None):
+    """Each loss along the straight line from an initial T to the ground-truth T.
+
+    A diagnostic for the gradient-based learner: it shows whether the objective actually
+    slopes toward the right answer, or whether the path crosses a barrier.
+
+    The interpolated T is SOFT, so the cluster support is taken from its row-argmax at each
+    step -- a dense T is in no partition at all, and both `get_S` and `get_A_high` need a
+    support to work with. That makes the curve piecewise in the support, so small kinks are
+    the argmax switching clusters, not the loss itself jumping.
+
+    Args:
+        T_gt: (p, k) ground-truth abstraction map, the endpoint of the path.
+        A_low: (p, p) low-level adjacency.
+        LOSSES: {name: fn}, each called with keywords A_low, E_low, T, S, A_high, E_high.
+        n_steps: points along the path.
+        initial_T: 'uniform' (every entry 1/k), 'compact' (hard, at the ground-truth argmax)
+            or 'surjective' (a random partition, so every cluster starts non-empty).
+        save_path: write here instead of showing. Parent directories are created.
+    """
     n_plots = len(LOSSES)
-    fig, ax = plt.subplots(1,n_plots,figsize=(10,6))
+    fig, ax = plt.subplots(1,n_plots,figsize=(10,6),squeeze=False)
+    ax = ax[0]   # squeeze=False keeps indexing valid when a single loss is passed
     E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
     n_low, n_high = T_gt.shape
 
@@ -360,8 +448,11 @@ def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,i
         loss_fn = LOSSES[loss_name]
         loss_values = []
         for T in T_list:
-            S = get_S(T=T, E_low=E_low, A_low=A_low)
-            A_high = get_A_high(T=T, A_low=A_low)
+            # a soft T has no partition of its own; read the support off the row-argmax
+            T_hard = np.zeros_like(T)
+            T_hard[np.arange(n_low), np.argmax(np.abs(T), axis=1)] = 1.
+            S = get_S(T=T, E_low=E_low, A_low=A_low, T_hard=T_hard)
+            A_high = get_A_high(T=T, A_low=A_low, T_hard=T_hard)
             E_high = np.linalg.inv(np.eye(n_high) - A_high)
             try:
                 loss_values.append(loss_fn(A_low=A_low, E_low=E_low, T=T, S=S, A_high=A_high, E_high=E_high))
@@ -372,197 +463,12 @@ def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,i
         #ax[i].set_yscale('log')
         ax[i].legend()
     fig.suptitle(f'Loss along linear path from {initial_T} initialisation to Ground Truth')
-    fig.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=n_plots)
-    plt.show()
-
-def plot_loss_landscape(A_low, T_gt, idx1, idx2=None, n_points=100, flip_prob=0.):
-        """
-        Visualises the loss wrt parameters in T.
-        
-        Params:
-            A_low (np.ndarray): low-level adjacency matrix
-            T_gt (np.ndarray): ground truth abstraction matrix
-            idx1 (int): index of parameter in T to vary
-            idx2 (int, optional): index of second parameter in T to vary.
-        """
-
-        n_low, n_high = T_gt.shape
-        assert n_high == 2, "Only supports 2 high-level varaibles"
-
-        T_gt = (T_gt != 0).astype(float) #convert to binary for visualisation
-        W = (T_gt != 0).astype(float)
-        flip_mask = (np.random.rand(W.shape[0]) < flip_prob)[:,None] * np.ones_like(W)
-        W = (1 - W) * flip_mask + W * (1 - flip_mask)
-
-        t1_values = np.linspace(0,1,n_points)
-        #model = HailMary(n_low=n_low, n_high=n_high, A_low=A_low)
-        model = None
-        if idx2 is None:
-            losses = []
-            for t1 in t1_values:
-                W[idx1,0] = t1
-                W[idx1,1] = 1-t1
-                try:
-                    balance_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss = model(T=torch.from_numpy(W).float())
-                    losses.append((balance_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), surjective_loss.item(), entropy_loss.item()))
-                except torch._C._LinAlgError:
-                    print(f"Failed to run for t ={t1}.")
-                    losses.append((float('nan'), float('nan'), float('nan'), float('nan'), float('nan'), float('nan')))
-
-            balance_losses, abs_losses, graph_losses, topo_losses, surjective_losses,entropy_losses = zip(*losses)
-            plt.plot(t1_values, balance_losses, label='Balance Loss')
-            plt.plot(t1_values, abs_losses, label='Abstraction Loss')
-            plt.plot(t1_values, graph_losses, label='Balance Loss')
-            plt.plot(t1_values, topo_losses, label='Balance Loss')
-            plt.plot(t1_values, surjective_losses, label='Surjective Loss')
-            plt.plot(t1_values, entropy_losses, label='Entropy Loss')
-            plt.xlabel(f'T_value for low-level variable {idx1}')
-            plt.ylabel('Loss')
-            plt.title('Loss Landscape')
-            plt.legend()
-            plt.show()
-        else:
-            losses = []
-            t2_values = np.linspace(0,1,n_points)
-            for t1 in t1_values:
-                row_losses = []
-                W[idx1,0] = t1
-                W[idx1,1] = 1-t1
-                for t2 in t2_values:
-                    W[idx2,0] = t2
-                    W[idx2,1] = 1-t2
-                    try:
-                        balance_loss, abs_loss, graph_loss, topo_loss, surjective_loss, entropy_loss = model(T=torch.from_numpy(W).float())
-                        row_losses.append((balance_loss.item(), abs_loss.item(), graph_loss.item(), topo_loss.item(), surjective_loss.item(), entropy_loss.item()))
-                    except torch._C._LinAlgError:
-                        print(f"Failed to run for t1 ={t1}, t2={t2}.")
-                        row_losses.append((float('nan'), float('nan'), float('nan'), float('nan'), float('nan'), float('nan')))
-                losses.append(row_losses)
-            
-            fig, ax = plt.subplots(1,6,figsize=(10,8))
-            for i, loss_name in enumerate(['Balance Loss','Abstraction Loss','Graph Loss', 'Topo Loss','Surjective Loss','Entropy Loss']):
-                specific_loss = np.array([[loss[i] for loss in row] for row in losses])
-                im1 = ax[i].imshow(specific_loss, cmap='Blues', origin='lower')
-                ax[i].set_title(loss_name)
-                fig.colorbar(im1, ax=ax[i])  # Colorbar for subplot 1
-
-                ax[i].set_xlabel(f'low-level variable {idx2}')
-                ax[i].set_ylabel(f'low-level variable {idx1}')
-
-                gt_x = T_gt[idx2, 0] * n_points  # scale from [0,1] to [0,n_points]
-                gt_y = T_gt[idx1, 0] * n_points
-                ax[i].scatter([gt_x], [gt_y], color='red', marker='*', s=200, label='Ground truth')
-                #ax[i].legend()
-            
-            plt.show()
-
-def plot_assignment_raster(history, subsample=10, T_gt=None,soft=True):
-    T_list = history['T'][::subsample]  # (n_epochs, n_low, n_high)
-    n_epochs = len(T_list)
-    n_low, n_high = T_list[0].shape
-    
-    # Hard assignment at each epoch: (n_epochs, n_low)
-    assignments = np.stack([T.argmax(axis=1) for T in T_list], axis=0)
-    soft_assignments = np.stack(T_list, axis=0)
-    cluster_0_probs = soft_assignments[:, :, 0]
-
-    
-    # If ground truth given, find best cluster permutation via Hungarian matching
-    # at the final epoch and apply consistently
-    if T_gt is not None:
-        from scipy.optimize import linear_sum_assignment
-        final_assign = assignments[-1]
-        gt_assign = T_gt.argmax(axis=1)
-        # Cost matrix: how many variables match between predicted cluster i and gt cluster j
-        cost = np.zeros((n_high, n_high))
-        for i in range(n_high):
-            for j in range(n_high):
-                cost[i, j] = -np.sum((final_assign == i) & (gt_assign == j))
-        _, col_ind = linear_sum_assignment(cost)
-        # Remap all assignments
-        remap = {i: col_ind[i] for i in range(n_high)}
-        assignments = np.vectorize(remap.get)(assignments)
-    
-    fig, axes = plt.subplots(1, 2 if T_gt is not None else 1, 
-                              figsize=(14, 5), sharey=False)
-    ax = axes[0] if T_gt is not None else axes
-
-    if soft:
-        # Now plot this heatmap
-        im = ax.imshow(cluster_0_probs.T, aspect='auto', 
-                    cmap='Blues', vmin=0, vmax=1, 
-                    interpolation='nearest')
-        ax.set_title('Soft Assignment Probability: Cluster 0')
-        plt.colorbar(im, ax=ax, label='Probability (0 to 1)')
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path) or '.', exist_ok=True)
+        fig.savefig(save_path, dpi=160, bbox_inches='tight')
+        plt.close(fig)
     else:
-        im = ax.imshow(assignments.T, aspect='auto', 
-                    cmap='tab20', interpolation='nearest',
-                    vmin=0, vmax=n_high-1)
-        ax.set_xlabel('Epoch (subsampled)')
-        ax.set_ylabel('Variable index')
-        ax.set_title('Predicted cluster assignment over training')
-        ax.set_xticks(np.linspace(0, n_epochs-1, 6).astype(int))
-        ax.set_xticklabels((np.linspace(0, len(history['T'])-1, 6) * subsample).astype(int))
-        ax.set_yticks(np.arange(n_high)) # This forces the axis to only show ticks for your cluster count
-        #ax.set_yticklabels([f'Node {i}' for i in range(n_high)])
-        plt.colorbar(im, ax=ax, label='Cluster')
-    
-    if T_gt is not None:
-        # Ground truth column
-        gt_col = T_gt.argmax(axis=1)[:, None] * np.ones((1, n_epochs))
-        axes[1].imshow(gt_col.T, aspect='auto', cmap='tab20', 
-                       interpolation='nearest', vmin=0, vmax=n_high-1)
-        axes[1].set_title('Ground truth assignment')
-        axes[1].set_xlabel('(reference)')
-    
-    plt.tight_layout()
-    return fig
-
-
-def animate_matrices(matrix_list:list[np.ndarray], xlabel:str = '', ylabel:str = '', title: str = '', subsample=10, fps=15, save_dir='results/timelapse/',cmap='Blues'):
-    """
-    Creates a time-lapse animation of matrix values.
-    
-    Args:
-        matrix_list: List of 2D matrices to display
-        subsample: How many epochs to skip between frames to speed up the video
-        fps: Frames per second for the playback
-    """
-    matrix_list = matrix_list[::subsample]
-    n_frames = len(matrix_list)
-    n_rows, n_cols = matrix_list[0].shape
-    
-    fig, ax = plt.subplots(figsize=(6, 8))
-    
-    cax = ax.imshow(matrix_list[0], aspect='auto', cmap=cmap, 
-                    vmin=0, vmax=1, interpolation='nearest')
-    
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    title_object = ax.set_title(title + ' - Epoch: 1')
-    fig.colorbar(cax, ax=ax, label='Value')
-    
-    ax.set_xticks(np.arange(n_cols))
-    #ax.set_xticklabels([f'Cluster {i}' for i in range(n_high)])
-    
-    # The update function called for each frame
-    def update(frame):
-        # Update the data in the heatmap
-        cax.set_array(matrix_list[frame])
-        # Update the title with the correct epoch number
-        title_object.set_text(title + f" - Epoch: {frame * subsample + 1}")
-        return cax, title_object
-
-    # Build the animation
-    ani = animation.FuncAnimation(fig, update, frames=n_frames, 
-                                  interval=1000/fps, blit=False)
-    
-    # Close the static figure so it doesn't print twice in Jupyter
-    plt.close(fig)
-    filename = save_dir +  f'{title}.gif'
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    ani.save(filename, writer='pillow', fps=15)
-    
+        plt.show()
 
 def animate_partition_training(A_low, history, save_path='results/timelapse/partition.gif',
                                title='', as_fraction=True, max_active_frames=45,
@@ -571,7 +477,7 @@ def animate_partition_training(A_low, history, save_path='results/timelapse/part
 
     Left   : T_soft, rows sorted by final cluster so the block structure is legible.
     Top-R  : the training losses as stored in `history` (already lambda-weighted by
-             HailMary.train), on a log axis.
+             GradCAP.train), on a log axis.
     Bot-R  : hard metrics recomputed from argmax(T_soft) at each frame. With
              `as_fraction=True` (default) all three are rates in [0, 1] on ONE axis --
              violating nodes / p, clusters used / k offered, intra-cluster edge mass -- which
@@ -586,8 +492,9 @@ def animate_partition_training(A_low, history, save_path='results/timelapse/part
 
     Args:
         A_low: (p, p) low-level adjacency.
-        history: dict returned by `HailMary.train(..., keep_history=True)`. Needs 'T'
-            (a T_soft snapshot per epoch) and optionally the loss lists.
+        history: dict returned by `GradCAP.train(..., keep_history=True)`. Needs 'T'
+            (a T_soft snapshot per epoch) and optionally the loss lists. A plain list of
+            T snapshots also works, and then no loss curves are drawn.
         save_path: where to write the .gif. Parent directories are created.
         title: prefix for the figure suptitle.
         as_fraction: plot the bottom-right metrics as rates in [0,1] on a single axis
@@ -652,16 +559,21 @@ def animate_partition_training(A_low, history, save_path='results/timelapse/part
     fig.colorbar(im, ax=axT, fraction=0.046, label='T_soft')
 
     E = np.arange(n_epochs)
+    # These keys are exactly what GradCAP.train records. 'info_loss' used to be listed here
+    # and matched nothing, so that curve was silently missing from every animation; the
+    # series GradCAP actually stores is 'intra_cluster_edges'.
     for key, lab, c in [('graph_loss', 'graph (All-In)', '#d62728'),
                         ('one_child_loss', 'one_child', '#1f77b4'),
-                        ('info_loss', 'info', '#2ca02c'),
+                        ('intra_cluster_edges', 'info (intra-cluster edges)', '#2ca02c'),
                         ('recon_loss', 'recon', '#9467bd')]:
         v = history.get(key) if isinstance(history, dict) else None
         if v is None or not len(v) or not np.any(np.asarray(v) > 0):
             continue
         axL.plot(E[:len(v)], np.maximum(np.asarray(v, float), 1e-8), lw=1.2, color=c, label=lab)
     axL.set_yscale('log'); axL.set_xlim(0, n_epochs)
-    axL.set_ylabel('weighted loss'); axL.legend(fontsize=7, loc='upper right', framealpha=.9)
+    axL.set_ylabel('weighted loss')
+    if axL.get_legend_handles_labels()[0]:   # a bare list of T snapshots has no loss curves
+        axL.legend(fontsize=7, loc='upper right', framealpha=.9)
     axL.set_title('training losses (as weighted in the objective)', fontsize=9)
     vl1 = axL.axvline(0, color='k', lw=1.1)
 

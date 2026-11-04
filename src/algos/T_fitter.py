@@ -68,62 +68,128 @@ def _M_block(A, partition, a, b):
     return Wab @ np.linalg.inv(np.eye(len(partition[b])) - Wbb)
 
 
-def _cycle_within(M, comp, ci, start, maxlen=12):
-    """Shortest simple cycle through `start` using only edges inside SCC `ci`."""
+def _cycle_within(M, comp, ci, start, maxlen=None):
+    """Shortest simple cycle through `start`, using only edges inside SCC `ci`.
+
+    BFS over NODES with parent pointers, O(V + E). Every simple cycle through `start` is a
+    path start -> ... -> v followed by the edge v -> start, so the shortest one runs along a
+    shortest path to some in-neighbour of `start`. BFS pops in non-decreasing distance, so
+    the first such v it reaches gives the shortest cycle; the BFS-tree path is simple and
+    `start` appears only at its ends, so closing it keeps the cycle simple.
+
+    Returns the cycle as [start, ..., v] (the closing edge v -> start is implied), or None
+    when `start` is on no cycle inside `ci`.
+    """
     from collections import deque
-    q = deque([[start]])
+    par = {start: None}
+    q = deque([start])
     while q:
-        path = q.popleft()
-        if len(path) > maxlen:
-            continue
-        for v in np.where(M[path[-1]])[0]:
+        u = q.popleft()
+        for v in np.where(M[u])[0]:
+            v = int(v)
             if comp[v] != ci:
                 continue
-            if v == start and len(path) >= 1:
-                return path
-            if v not in path:
-                q.append(path + [v])
+            if v == start:
+                path, w = [], u
+                while w is not None:
+                    path.append(w)
+                    w = par[w]
+                return path[::-1]
+            if v not in par:
+                par[v] = u
+                q.append(v)
     return None
 
 
-def _reconcile(votes):
+def _reconcile(votes, residuals=False):
     """Combine several collinearity votes for the same t, and report their disagreement.
 
     Each vote is only defined up to sign and scale, so they are unit-normalised and
     sign-aligned to the first before averaging. The residual after averaging is the
     disagreement the abstraction condition cannot satisfy -- the same quantity
     `fit_abstraction` minimises as its multi-child penalty.
+
+    With residuals=True also returns the per-vote residual VECTORS (w - m), stacked. The
+    penalty is their sum of squares, and a least-squares solver wants the vectors rather
+    than that sum: squaring costs half the available precision. The stack always has one
+    row per element of `votes`, degenerate votes contributing zeros, so its length depends
+    only on the graph and stays fixed across calls -- which `least_squares` requires.
     """
-    u = []
-    for v in votes:
+    d = len(votes[0]) if votes else 0
+    keep, u = [], []
+    for n_, v in enumerate(votes):
         n = np.linalg.norm(v)
         if n > 1e-12:
+            keep.append(n_)
             u.append(v / n)
+
+    def _out(m, R):
+        dis = float(np.sum(R ** 2))
+        return (m, dis, R.ravel()) if residuals else (m, dis)
+
     if not u:
-        return None, 0.0
+        return _out(None, np.zeros((len(votes), d)))
     ref = u[0]
     u = [w if w @ ref >= 0 else -w for w in u]
     m = np.mean(u, axis=0)
     n = np.linalg.norm(m)
+    m = u[0] if n <= 1e-12 else m / n
+    R = np.zeros((len(votes), d))
+    for n_, w in zip(keep, u):
+        R[n_] = w - m
+    return _out(m, R)
+
+def _reconcile_d(votes, dvotes):
+    """`_reconcile` plus its derivative, for the analytic Jacobian.
+
+    Mirrors `_reconcile` branch for branch -- same degeneracy thresholds, same sign
+    reference, same fallbacks -- so the residual it returns is identical and only the
+    derivative is new. Returns (m, dis, R_flat, dm, dR_flat), where dR_flat has one row per
+    entry of R_flat and one column per parameter.
+
+    Forward mode: each t depends on x only through its children, so one pass down the
+    condensation order carries dt/dx alongside t. The sign alignment is piecewise constant,
+    so it contributes nothing to the derivative away from a measure-zero set; the same goes
+    for the two norm thresholds.
+    """
+    d = len(votes[0]) if votes else 0
+    n_par = dvotes[0].shape[1] if dvotes else 0
+    keep, u, du = [], [], []
+    for n_, v in enumerate(votes):
+        n = np.linalg.norm(v)
+        if n > 1e-12:
+            uj = v / n
+            keep.append(n_)
+            u.append(uj)
+            du.append(((np.eye(d) - np.outer(uj, uj)) / n) @ dvotes[n_])
+    R = np.zeros((len(votes), d))
+    dR = np.zeros((len(votes), d, n_par))
+    if not u:
+        return None, 0.0, R.ravel(), np.zeros((d, n_par)), dR.reshape(-1, n_par)
+    ref = u[0]
+    sg = [1.0 if (w @ ref) >= 0 else -1.0 for w in u]
+    u = [a * w for a, w in zip(sg, u)]
+    du = [a * D for a, D in zip(sg, du)]
+    m = np.mean(u, axis=0)
+    dm = np.mean(du, axis=0)
+    n = np.linalg.norm(m)
     if n <= 1e-12:
-        return u[0], float(sum(np.linalg.norm(w - u[0]) ** 2 for w in u))
-    m = m / n
-    return m, float(sum(np.linalg.norm(w - m) ** 2 for w in u))
-
-def get_S(A_low, T, partition=None):
-    """
-    s_i = (I - A_low[pi_i, pi_i])^-1 t_i, supported on cluster i.
-    """
-    S = np.zeros_like(T)
-    for i in range(T.shape[1]):
-        if len(partition[i]) == 0:
-            continue
-        A_ii = A_low[np.ix_(partition[i], partition[i])]
-        S[partition[i], i] = np.linalg.solve(np.eye(len(partition[i])) - A_ii, T[partition[i], i])
-    return S
+        m, dm = u[0], du[0]
+    else:
+        m, dm = m / n, ((np.eye(d) - np.outer(m / n, m / n)) / n) @ dm
+    for idx, n_ in enumerate(keep):
+        R[n_] = u[idx] - m
+        dR[n_] = du[idx] - dm
+    return m, float(np.sum(R ** 2)), R.ravel(), dm, dR.reshape(-1, n_par)
 
 
-def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
+# s_i = (I - A_low[pi_i, pi_i])^-1 t_i lives in utils/abstraction_algebra.py, which carries the derivation
+# and the local-inverse correction. Imported inside the fit so this numpy-only module does not
+# pull torch in through that module, matching how scipy is imported below.
+
+
+def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
+                          tol=1e-15, exact_tol=1e-28, analytic_jac=True,
                           return_info=False):
     """Fit (A_high, T): eigen-solve cyclic SCCs, propagate the rest, OPTIMISE the sinks.
 
@@ -135,8 +201,13 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
     optimisation. Only the sink directions are searched, over sum(|pi_s|) parameters rather
     than p, with `n_restarts` random starts. When there are no sinks the whole fit is closed
     form and `n_restarts` is ignored.
+
+    `tol` and `maxiter` govern ONLY that sink search, and they set the accuracy floor of the
+    whole fit: see the note at the `least_squares` call. Exactness here is numerical, not
+    structural -- on a partition that admits an exact abstraction the fit reaches RAE ~3e-16,
+    which is where the generating abstraction itself scores.
     """
-    from scipy.optimize import minimize
+    from scipy.optimize import least_squares
 
     A = np.asarray(A_low, dtype=float)
     p = sum(len(cluster) for cluster in partition)
@@ -185,7 +256,7 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
     cyclic = [len(members[c]) > 1 or (len(members[c]) == 1 and M[members[c][0], members[c][0]])
               for c in range(ncomp)]
 
-    # ---- cyclic SCCs are pinned and independent of the sinks: solve them once
+    # ---- cyclic SCCs are pinned and independent of the sinks so we solve them once
     t_fixed = [None] * k
     n_cyc = 0
     for c in order:
@@ -216,32 +287,72 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
              if not cyclic[c] and not M[members[c][0]].any()]
     sizes = [len(partition[i]) for i in sinks]
     offs = np.cumsum([0] + sizes)
+    n_par = int(offs[-1])
 
-    def forward(x):
-        """Fill every t from the sink directions in x; return (t, collinearity penalty)."""
+    def forward(x, residuals=False, want_jac=False):
+        """Fill every t from the sink directions in x.
+
+        Returns (t, collinearity penalty), or (t, penalty, residual vector) with
+        residuals=True, or (t, penalty, residual vector, Jacobian) with want_jac=True.
+        The penalty is the sum of squares of that vector.
+        """
         t = list(t_fixed)
+        dt = [None] * k if want_jac else None
+        if want_jac:
+            for i in range(k):
+                if t[i] is not None:                 # pinned by a cyclic SCC: no x dependence
+                    dt[i] = np.zeros((len(partition[i]), n_par))
         for n_, i in enumerate(sinks):
+            ci = len(partition[i])
             v = x[offs[n_]:offs[n_ + 1]]
             nv = np.linalg.norm(v)
-            t[i] = v / nv if nv > 1e-12 else np.ones(len(partition[i])) / np.sqrt(len(partition[i]))
-        pen = 0.0
+            if nv > 1e-12:
+                t[i] = v / nv
+                if want_jac:
+                    D = np.zeros((ci, n_par))
+                    D[:, offs[n_]:offs[n_ + 1]] = (np.eye(ci) - np.outer(t[i], t[i])) / nv
+                    dt[i] = D
+            else:
+                t[i] = np.ones(ci) / np.sqrt(ci)
+                if want_jac:
+                    dt[i] = np.zeros((ci, n_par))
+        pen, res, jac = 0.0, [], []
         for c in order:
             if cyclic[c]:
                 continue
             i = int(members[c][0])
             if i in sinks:
                 continue
-            votes = [Mb[(i, j)] @ t[j] for j in (int(j) for j in np.where(M[i])[0])
-                     if t[j] is not None and (i, j) in Mb]
-            ti, dis = _reconcile(votes)
+            ci = len(partition[i])
+            kids = [int(j) for j in np.where(M[i])[0] if t[int(j)] is not None and (i, int(j)) in Mb]
+            votes = [Mb[(i, j)] @ t[j] for j in kids]
+            if want_jac:
+                dvotes = [Mb[(i, j)] @ dt[j] for j in kids]
+                ti, dis, r_i, dti, dr_i = _reconcile_d(votes, dvotes)
+                res.append(r_i)
+                jac.append(dr_i)
+                dt[i] = dti if ti is not None else np.zeros((ci, n_par))
+            else:
+                out = _reconcile(votes, residuals=residuals)
+                ti, dis = out[0], out[1]
+                if residuals:
+                    res.append(out[2])
             pen += dis
             if ti is None:
-                ti = np.ones(len(partition[i])) / np.sqrt(len(partition[i]))
+                ti = np.ones(ci) / np.sqrt(ci)
             t[i] = ti
+        if want_jac:
+            r = np.concatenate(res) if res else np.zeros(1)
+            J = np.concatenate(jac, axis=0) if jac else np.zeros((1, n_par))
+            return t, pen, r, J
+        if residuals:
+            r = np.concatenate(res) if res else np.zeros(1)
+            return t, pen, r
         return t, pen
 
-    n_par = int(offs[-1])
+    n_failed, last_error = 0, None
     if n_par == 0:
+        # no sinks: the whole fit is closed form, nothing is searched
         best_x, best_pen = np.zeros(0), forward(np.zeros(0))[1]
     else:
         rng = np.random.default_rng(seed)
@@ -249,16 +360,28 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
         for _ in range(max(1, n_restarts)):
             x0 = rng.standard_normal(n_par)
             try:
-                res = minimize(lambda z: forward(z)[1], x0, method='SLSQP', tol=1e-12,
-                               options={'maxiter': maxiter})
+                res = least_squares(lambda z: forward(z, residuals=True)[2], x0,
+                                    jac=(lambda z: forward(z, want_jac=True)[3])
+                                        if analytic_jac else '2-point',
+                                    method='trf', xtol=tol, ftol=tol, gtol=tol,
+                                    max_nfev=maxiter)
                 xc, pc = res.x, forward(res.x)[1]
-            except Exception:
+            except Exception as e:
+                n_failed += 1
+                last_error = e
                 xc, pc = x0, forward(x0)[1]
             if pc < best_pen:
                 best_x, best_pen = xc, pc
+
+            if best_pen <= exact_tol:
+                break
         if best_x is None:
             best_x, best_pen = np.zeros(n_par), np.inf
 
+    if n_par and n_failed == max(1, n_restarts):
+        raise RuntimeError(
+            f'the sink search failed on all {n_failed} restarts, so the fit would be a '
+            f'random direction. Last error: {last_error!r}') from last_error
     t, penalty = forward(best_x)
     T = np.zeros((p, k))
     for i in range(k):
@@ -271,9 +394,11 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
         ti = t[i]
         A_high[i, j] = float((Mm @ t[j]) @ ti / (ti @ ti))
     if return_info:
-        return A_high, T, dict(penalty=penalty, n_sinks=len(sinks), n_cyclic=n_cyc,
+        return A_high, T, dict(penalty=penalty, n_failed=n_failed,
+                               n_sinks=len(sinks), n_cyclic=n_cyc,
                                n_free=len(sinks), n_scc=ncomp)
     
-    return A_high, T, get_S(A_low, T, partition)
+    from src.utils.abstraction_algebra import get_S
+    return A_high, T, get_S(T=T, A_low=A, partition=partition)
 
 
