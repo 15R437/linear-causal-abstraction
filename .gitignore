@@ -28,16 +28,17 @@ MANIFEST
 
 results/**
 data/**
+# ...except the Leontief cache: 244 KB, and without it the EXIOBASE experiment needs the
+# 239 MB IOT_2024_ixi.zip, which is not ours to redistribute
+!data/A_low.npy
+!data/A_low_labels.pkl
 
 # study figures: keep the PNGs the READMEs embed, drop the regenerable vector copies
 experiments/**/figures/*.pdf
 experiments/**/figures/*.npz
 
-# exploratory study: keep the scripts and notes, drop the regenerable outputs
-experiments/archive/figures/
-experiments/archive/data/
-experiments/archive/**/*.log
-experiments/archive/**/*.csv
+# exploratory archive: kept locally, not published
+experiments/archive/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -221,3 +222,4 @@ __marimo__/
 
 .DS_Store
 supplementary.zip
+timelapse.gif

@@ -1,2 +1,270 @@
-# linear-causal-abstraction
-Implements algorithms for learning causal abstractions in the linear setting.
+# Causal Abstraction of Linear Systems: Sufficient Conditions and Methods
+
+## Overview
+
+Large causal systems often admit multiple levels of description. For example, an economy of
+hundreds of industrial sectors might be described by a handful of "macro-sectors" e.g. raw materials, processing, services and energy. We want to be able to take this simpler description and make predictions about the economy that are consistent with the original system even when we intervene (e.g subsidise a certain macro-sector or place tariffs). Causal Abstraction (CA) provides the formal framework for this idea.
+
+This repository learns coarse models that meet it. Given the weight matrix of a
+linear system, it searches for a grouping of the variables and the aggregation
+weights that make the resulting small model a valid abstraction of the large one.
+It also establishes conditions under which such a model is guaranteed to exist —
+including for systems with feedback loops, which real input–output economies have
+and which previous work on linear causal abstraction excluded.
+
+
+<p align="center">
+  <img src="assets/intro_figure.png" width="900" alt="Six UK economic sectors from EXIOBASE collapsing into a three-variable value chain: feed and ingredients, livestock farming, meat processing">
+</p>
+<p align="center"><em>
+  <!-- DRAFT caption - edit freely -->
+  Six UK sectors from the EXIOBASE input&#8209;output table: food products
+  (<em>F<sub>p</sub></em>), beverages (<em>B<sub>v</sub></em>), cattle (<em>C<sub>a</sub></em>),
+  poultry (<em>P<sub>o</sub></em>), cattle meat (<em>M<sub>c</sub></em>) and poultry meat
+  (<em>M<sub>p</sub></em>). Edge weights are the monetary input from industry
+  <em>i</em> needed per unit of output in industry <em>j</em>. The clusters
+  satisfy All&#8209;In and One&#8209;Child with an acyclic cluster graph; the conditions proven
+  sufficient for exact abstraction here. <code>greedy_allin</code> recovers exactly this
+  partition from the weight matrix alone (<code>experiments/intro_example.py</code>). The
+  <em>F<sub>p</sub></em>&#8596;<em>B<sub>v</sub></em> cycle sits inside a cluster: the low-level model
+  is cyclic, the abstraction is not.
+</em></p>
+
+---
+
+## Installation
+
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+```
+
+The editable install is what makes `import src...` and `import experiments...` resolve from
+any working directory. Without it the scripts only run from the repository root.
+
+## Quick start
+
+```python
+import numpy as np
+from src.utils.generate_data import sample_low_level_graph
+from src.algos.greedy import aoc_closure, greedy_allin
+from src.algos.T_fitter import fit_abstraction_eigen
+from src.utils.losses import RAE, reconstruction_loss
+
+# a 100-variable linear SCM
+A_low, *_ = sample_low_level_graph(n_high=10, n_low=100, density=0.5, seed=0, shuffle=True)
+E_low = np.linalg.inv(np.eye(A_low.shape[0]) - A_low)
+
+for name, partition in [("aoc_closure",  aoc_closure(A_low, 10, n_restarts=10, seed=0)),
+                        ("greedy_allin", greedy_allin(A_low, 10))]:
+    A_high, T, S = fit_abstraction_eigen(A_low, partition, seed=0)   # stage 2: fit the weights
+    print(name,
+          "RAE %.2e" % RAE(A_low=A_low, T=T, A_high=A_high, S=S, E_low=E_low),
+          "ReconErr %.4f" % reconstruction_loss(A_low=A_low, T=T, A_high=A_high))
+```
+
+```
+aoc_closure    RAE 8.53e-15   ReconErr 1.0662
+greedy_allin   RAE 6.31e-01   ReconErr 0.9831
+```
+
+Both stages are visible here: `aoc_closure` picks a partition that satisfies both sufficient
+conditions, so the fitted abstraction is exact to machine precision — but it buries so much
+structure that it reconstructs `A` worse than doing nothing. `greedy_allin` gives up
+exactness and buys back reconstruction. Which you want depends on how much abstraction error
+you are willing to tolerate, which is the question the next figure asks directly.
+
+## Theoretical Overview
+
+### Background
+We consider linear Structural Causal Models (SCMs) over a finite set of variables, i.e. a tuple $(\mathbf{X}, \mathbf{A}, \mathbf{U}, \mathbb{P}(\mathbf{U}))$ where
+* $\mathbf{A} \in \mathbb{R}^{p \times p}$ is a weight matrix,
+* $\mathbf{U} \in \mathbb{R}^{p}$ is a set of $p$ unobserved (exogenous) random variables with joint distribution $\mathbb{P}(\mathbf{U})$ and
+* $\mathbf{X} \in \mathbb{R}^{p}$ is a set of $p$ observed (endogenous) random variables determined by the equation
+
+$$ \mathbf{X} = \mathbf{A}^{T}\mathbf{X} + \mathbf{U}$$
+
+Given a linear Structural Causal Model (SCM) $\mathcal{M}_{\mathcal{L}}$ over $p$ variables $\mathbf{X} = (X_{1},\dots X_{p})$, we can define
+* a $k$-partition of the variables, i.e. a surjective map $\pi^{-1} : \{1,...,p\} \rightarrow \{1,...,k\}$ ($\pi(i)$ should be read as the pre-image of $\pi^{-1}$), 
+
+* a linear aggregation map $\mathbf{T} \in \mathbb{R}^{p\times k}$ such that the $(r,j)$'th entry of $\mathbf{T}$ is non-zero if and only if $r \in \pi(j)$ and
+
+* an exogenous aggregation map $\mathbf{S} \in \mathbb{R}^{p \times k}$ such that the $(r,j)$'th entry of $\mathbf{S}$ is zero whenever $r \notin \pi(j)$.
+
+These define variables $\tilde{\mathbf{X}} := \mathbf{T}^{T}\mathbf{X}$ and $\tilde{\mathbf{U}} := \mathbf{S}^{T}\mathbf{U}$ over which we can define a linear SCM $\mathcal{M}_{\mathcal{H}}$ with weight matrix $\tilde{\mathbf{A}} \in \mathbb{R}^{k\times k}$.
+
+Causal Abstraction (CA) as defined by [Beckers & Halpern (2019)][bh19] requires that the abstraction mapping $(\mathbf{X},\mathbf{U}) \xmapsto{\,(\mathbf{T},\,\mathbf{S})\,} (\tilde{\mathbf{X}}, \tilde{\mathbf{U}})$ remains consistent under *do-interventions* in both models; essentially we want the operations *intervene* and *abstract* to commute. [Massidda et al. (2024)][massidda24] show that for linear SCMs with acyclic graphs and linear maps, CA is equivalent to
+
+<a id="eq-collinearity"></a>
+
+$$ \mathbf{A}_{\pi(i)\pi(j)}(\mathbf{I} - \mathbf{A}_{\pi(j)\pi(j)})^{-1}\mathbf{T}_{\pi(j)j} = \tilde{A}_{ij}\mathbf{T}_{\pi(i)i}. \tag{1}$$
+
+They also provide a necessary condition on the partition $\pi$, which we call the **All-In** condition.
+
+> **Definition (All-In).**
+> $\pi$ satisfies the **All-In** condition if and only if, for all distinct clusters $\pi(i), \pi(j)$, *either* there are no cross-cluster edges $X_{r} \rightarrow X_{s}$ (with $r \in \pi(i)$ and $s \in \pi(j)$), *or* every variable $r \in \pi(i)$ has an edge $X_{r} \rightarrow X_{s}$ to some variable $s \in \pi(j)$.
+
+### Contributions
+ * We show that equation [(1)](#eq-collinearity) also applies to SCMs with weight matrices $\mathbf{A}$ that are non-negative and satisfy $\rho(\mathbf{A}) < 1$. This covers realistic economic input-output matrices which are typically cyclic but satisfy these conditions.
+
+ * We show that in addition to the All-In condition, the following is a sufficient condition on $\pi$ 
+
+> **Definition (One-Child).**
+> $\pi$ satisfies the **One-Child** condition if and only if, each cluster $\pi(i)$ has at most one child cluster outside of itself (i.e. $\lvert \{\pi^{-1}(s) \mid X_{r} \rightarrow X_{s} \ \text{ for some } r \in \pi(i)\} \rvert \leq 1$).
+
+* We propose unsupervised greedy algorithms for learning partitions $\pi$ that satisfy the All-In and/or One-Child conditions as well as a gradient-based algorithm.
+
+* We propose an algorithm for learning $\mathbf{T}$ (and $\mathbf{S}$) given a partition $\pi$.
+
+## Experiments
+
+Every figure and table below is produced by the scripts in this repository; the command that
+regenerates each one is given beneath it. `p = 100`, `k = 10` unless stated.
+
+### Learning the partition
+
+| Method | All-In &darr; | 1-child &darr; | info &darr; |
+|---|---|---|---|
+| AOC Closure | **0.000** | **0.000** | 0.626 |
+| OC Closure | 0.292 | **0.000** | 0.446 |
+| Greedy All-In | **0.000** | 0.780 | **0.000** |
+| *ground truth* | 0.000 | 0.650 | 0.000 |
+
+<sub>Median over n = 40 instances. `p = 100`, `k ≤ 20`, density 0.5, blockiness 0.8, ground
+truth `k* = 10`, 12 closure restarts. All three columns are violation rates on a common
+`[0,1]` scale; lower is better, `0.000` ideal. Regenerate with
+`python experiments/partition_table.py`.</sub>
+
+Three agglomerative algorithms, scored on how far a partition is from the sufficient
+conditions and on how much structure it destroys — properties of the partition alone, with no
+fitter involved. **AOC Closure** is the only one that satisfies both conditions (All-In
+`0.000`, 1-child `0.000`), and so is the only one guaranteed an exact abstraction — but it
+buries `0.626` of the edges inside clusters. **Greedy All-In** buries none (`0.000`) at the
+cost of violating One-Child. The ground-truth partition itself scores `0.650` on 1-child, so
+the guarantee is stricter than reality requires.
+
+### The exactness–informativeness trade-off
+
+<p align="center">
+  <img src="assets/fig3_tolerance.png" width="900" alt="Reconstruction error against tolerated abstraction error at two graph densities, comparing AOC Closure, Greedy All-In, OC Closure and a random partition">
+</p>
+
+<sub>Median over 20 instances. `p = 100`, `k = 10`, blockiness 0.8, 12 closure restarts.
+Regenerate with `python experiments/synthetic.py` (about 5 minutes).</sub>
+
+Fix a tolerance `α` in advance, and accept a learned abstraction only if its RAE is within
+`α` *and* it reconstructs better than AOC Closure; otherwise fall back to AOC Closure, which
+is guaranteed to admit one. Each curve is therefore what you would actually ship under an
+`RAE ≤ α` requirement, not a method's raw score.
+
+**Greedy All-In is the only method that converts a loosened tolerance into a more informative
+model.** AOC Closure, OC Closure and a random partition are flat: their reconstruction never
+improves, however much abstraction error you are willing to tolerate. The gain grows with
+density — at `density 0.5` Greedy All-In reaches ReconErr `0.60` where everything else sits
+at `1.00`, and the knee falls at `α ≈ 10⁻²`, so the exactness being traded away is slight.
+
+### A UK input–output economy
+
+<p align="center">
+  <img src="assets/fig4_leontief.png" width="900" alt="Abstractions of the UK Leontief input-output graph learned by AOC Closure and by Greedy All-In, as cluster bubbles sized by sector count">
+</p>
+
+172 UK sector and factor-input rows from EXIOBASE, pruned at `|a| > 0.05`, which leaves 140
+that still carry an edge. This is the cyclic, non-negative, `ρ(A) < 1` regime the theory here
+extends to and that earlier work excluded. Each high-level node is labelled by its
+highest-weighted member — a gloss on the cluster, not a description of the rest of it.
+**AOC Closure** attains RAE `4.8e-17` with ReconErr `0.984`, but collapses 101 sectors into a
+single cluster and buries `61.3%` of the edges. **Greedy All-In** gives up exactness
+(RAE `2.9e-09`) for a genuinely more informative split — ReconErr `0.912`, only `19.2%` of
+edges buried.
+
+<sub>Regenerate with `python experiments/leontief_figure.py` (needs `data/A_low.npy` and
+`data/A_low_labels.pkl`, written by `experiments/leontief.py::parse_data`).</sub>
+
+## Repository layout
+
+```
+src/algos/            stage 1: find a partition
+  greedy.py             agglomerative -- aoc_closure, oc_closure, greedy_allin, random
+  gradcap.py            gradient-based
+  T_fitter.py           stage 2: fit (T, A_high, S) to a partition
+  uca.py                baseline (needs a third-party package)
+src/utils/
+  partition.py          operations on a partition: All-In violations, the cluster
+                        graph, intra-cluster edges, merges, matrix conversions
+  generate_data.py      synthetic linear SCMs
+  losses.py             RAE, reconstruction loss, diagnostics
+  helper.py             graph and abstraction algebra
+  plots.py              figures and training animations
+
+experiments/
+  synthetic.py                    synthetic benchmark sweeps; the trade-off figure
+  partition_table.py              the partition-quality table
+  leontief.py                     UK Leontief input-output study
+  leontief_figure.py              the learned high-level graphs on that economy
+  visualize_leontief_grouping.py  sector-grouping figures
+  intro_example.py                can the README's headline partition be learned?
+  mlp_abstraction.py              local linear SCM of a ReLU MLP
+
+pyproject.toml   editable install; makes src/ and experiments/ importable
+paper/           LaTeX fragments (algorithms, figures)
+supplementary/   ICLR submission snapshot: minimal runnable code
+assets/          figures used in this README
+```
+
+## Paper
+
+<!-- Venue and status; link it once public. The submitted snapshot is in
+     supplementary/ and the algorithm listings in paper/. -->
+
+```bibtex
+@inproceedings{TODO,
+}
+```
+
+Related: [neural-causal-abstraction](https://github.com/15R437/neural-causal-abstraction) — the nonlinear case, `X = Φ(WᵀX + u)`, and abstractions of trained networks.
+
+## References
+
+<!-- Add a line to each saying what this work takes from it. -->
+
+- **Beckers & Halpern (2019).** [Abstracting Causal Models](https://arxiv.org/abs/1812.03789). *AAAI-19*, 2678–2685.
+- **Massidda, Magliacane & Bacciu (2024).** [Learning Causal Abstractions of Linear Structural Causal Models](https://arxiv.org/abs/2406.00394). *UAI 2024*, PMLR 244:2486–2515. — the collinearity condition used by the fitter in `src/algos/T_fitter.py`; their [`causabs`](https://github.com/rmassidda/causabs) package is a dependency here.
+- **Zhu, Garrido Mejia, Schölkopf & Besserve (2024).** [Unsupervised Causal Abstraction](https://neurips.cc/virtual/2024/105108). *NeurIPS 2024 Workshop on Causal Representation Learning.* — the UCA baseline; implementation kindly provided by the authors and not redistributed here (see `src/algos/uca.py`).
+
+```bibtex
+@inproceedings{beckers2019abstracting,
+  title     = {Abstracting Causal Models},
+  author    = {Beckers, Sander and Halpern, Joseph Y.},
+  booktitle = {Proceedings of the 33rd AAAI Conference on Artificial Intelligence},
+  pages     = {2678--2685},
+  year      = {2019}
+}
+
+@inproceedings{massidda2024learning,
+  title     = {Learning Causal Abstractions of Linear Structural Causal Models},
+  author    = {Massidda, Riccardo and Magliacane, Sara and Bacciu, Davide},
+  booktitle = {Proceedings of the 40th Conference on Uncertainty in Artificial Intelligence},
+  series    = {PMLR},
+  volume    = {244},
+  pages     = {2486--2515},
+  year      = {2024}
+}
+
+@inproceedings{zhu2024unsupervised,
+  title     = {Unsupervised Causal Abstraction},
+  author    = {Zhu, Yuchen and Garrido Mejia, Sergio Hernan and Sch{\"o}lkopf, Bernhard and Besserve, Michel},
+  booktitle = {NeurIPS 2024 Workshop on Causal Representation Learning},
+  year      = {2024}
+}
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+[bh19]: https://arxiv.org/abs/1812.03789
+[massidda24]: https://arxiv.org/abs/2406.00394
+[zhu24]: https://neurips.cc/virtual/2024/105108
+[causabs]: https://github.com/rmassidda/causabs

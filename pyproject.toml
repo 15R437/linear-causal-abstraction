@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linear-causal-abstraction"
+version = "0.1.0"
+description = "Causal abstraction of linear SCMs: sufficient conditions and methods for learning a partition and its aggregation maps"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dynamic = ["dependencies"]
+
+[project.urls]
+Repository = "https://github.com/15R437/linear-causal-abstraction"
+
+[tool.setuptools]
+# `src` is packaged under its own name rather than being made the package root, so that the
+# existing `from src.utils... import` lines keep working unchanged. Installing with
+#     pip install -e .
+# is what lets every module and script drop `sys.path.insert(0, os.getcwd())`, which
+# previously made each file importable only when the interpreter started at the repo root.
+packages = ["src", "src.algos", "src.utils", "experiments"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }

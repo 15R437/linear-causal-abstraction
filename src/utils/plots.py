@@ -1,11 +1,8 @@
-import sys
 import os
-sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 from typing import Literal, Callable
 import matplotlib.pyplot as plt
 import torch
-#from src.models.hail_mary import HailMary
 import seaborn as sns
 import numpy as np
 import networkx as nx
@@ -15,7 +12,7 @@ from matplotlib.ticker import MaxNLocator
 import matplotlib.animation as animation
 import matplotlib.cm as cm
 from itertools import combinations
-from src.utils.helper import get_S, get_A_high, regularised_surjective_init
+from src.utils.helper import get_S, get_A_high
 
 def visualize_causal_graph(A_low, A_high, T_matrix, S_matrix, threshold=1e-5,title='Causal Abstraction Graph',save_path=None):
     """
@@ -347,9 +344,13 @@ def plot_probability_path(T_gt, A_low, LOSSES:dict[str,Callable], n_steps=1000,i
         T_init = np.zeros_like(T_gt)
         T_init[np.arange(n_low), np.argmax(T_gt, axis=1)] = 1
     elif initial_T == 'surjective':
-        from scipy.special import softmax
-        logits = regularised_surjective_init(n_low, n_high)
-        T_init = softmax(logits, axis=-1)
+        # surjective by construction: random_partition gives every cluster a member, which
+        # is the only property the old regularised_surjective_init bought here -- and that
+        # one drew from the global np.random, so it was not reproducible. The path below
+        # interpolates T_init -> T_gt linearly, so a hard assignment is the natural start.
+        from src.algos.greedy import random_partition
+        from src.utils.partition import partition_to_matrix
+        T_init = partition_to_matrix(random_partition(n_low, n_high))
     else:
         raise ValueError(f"Invalid initial_T value: {initial_T}. Expected 'uniform', 'compact', or 'surjective'.")
 

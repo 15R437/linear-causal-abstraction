@@ -11,19 +11,18 @@ We build that SCM, check it reproduces the network, then abstract it: partition 
 t_l ~ (D_{l+1} W_{l+1})^T t_{l+1} is backpropagation, so each column of T should be the gradient of the
 output with respect to that layer's activations; we check that too.
 """
-import os
-import sys
 import time
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.algos.T_fitter import fit_abstraction_eigen
-from src.algos.greedy import aoc_closure, greedy_allin, random_partition, partition_to_matrix, all_in_violation, cluster_edge_counts
+from src.algos.greedy import aoc_closure, greedy_allin, random_partition
+from src.utils.partition import partition_to_matrix, all_in_violation, cluster_edge_counts
 from src.utils.helper import get_S
+from src.utils.partition import partition_from_matrix
 from src.utils.losses import RAE, reconstruction_loss
 
 
@@ -126,7 +125,8 @@ def layer_gradients(mlp, x0):
 def abstract(A, T_hard, sigma_u, seed=0):
     E_low = np.linalg.inv(np.eye(len(A)) - A)
     t0 = time.time()
-    A_high, T = fit_abstraction_eigen(A, T_hard, seed=seed)
+    partition = [clst for clst in partition_from_matrix(T_hard) if len(clst) > 0]
+    A_high, T, _ = fit_abstraction_eigen(A, partition, seed=seed)
     fit_time = time.time() - t0
     S = get_S(T=T, E_low=E_low, T_hard=T_hard, A_low=A)
     rae = {name: RAE(A_low=A, T=T, A_high=A_high, S=S, E_low=E_low, T_hard=T_hard, sigma_u=s) for name, s in sigma_u.items()}

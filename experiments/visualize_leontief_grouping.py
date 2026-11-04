@@ -1,13 +1,10 @@
 """
-Visualises exactly which EXIOBASE (GB) sectors hm_graph groups together on the
+Visualises exactly which EXIOBASE (GB) sectors GradCAP groups together on the
 real Leontief cyclic graph, and the resulting high-level causal structure.
 
 Requires data/A_low.npy and data/A_low_labels.pkl (sector/factor names in the
-same row order as A_low), both produced by experiments/leontiff.py::parse_data.
+same row order as A_low), both produced by experiments/leontief.py::parse_data.
 """
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.getcwd()))
 
 import pickle
 import textwrap
@@ -16,8 +13,9 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import FancyArrowPatch, Circle
 from pathlib import Path
 
-from src.models.wrapper import hail_mary_graph
-from src.utils.helper import process_output, cluster_indices
+from src.algos.gradcap import gradcap
+from src.utils.partition import partition_to_matrix, partition_from_matrix
+from src.algos.T_fitter import fit_abstraction_eigen
 
 # Validated 2-slot categorical palette (dataviz skill, references/palette.md)
 COLOR_CORE = "#2a78d6"
@@ -34,11 +32,10 @@ def load_data():
     return A_low, names
 
 
-def fit_hm_graph(A_low, k, seed_note=""):
-    p = A_low.shape[0]
-    E_low = np.linalg.inv(np.eye(p) - A_low)
-    T_hard = hail_mary_graph(A_low=A_low, k=k)
-    S_pred, T_pred, A_high_pred = process_output(T_hard=T_hard, A_low=A_low, E_low=E_low)
+def fit_gradcap(A_low, k, seed_note=""):
+    partition = gradcap(A_low=A_low, k=k)
+    T_hard = partition_to_matrix(partition)
+    A_high_pred, T_pred, S_pred = fit_abstraction_eigen(A_low=A_low, partition=partition)
     return T_hard, T_pred, A_high_pred
 
 
@@ -78,7 +75,7 @@ def draw_membership_panel(ax, names, core_idx, isolated_idx):
     ax.text(0.0, box_y, f"Connected core economy  (n = {len(core_idx)})",
              fontsize=12, fontweight="bold", color=COLOR_CORE, va="top")
     ax.text(0.0, box_y - 0.035,
-             "densely interlinked; hm_graph does not further subdivide it at k = 6–20",
+             "densely interlinked; GradCAP does not further subdivide it at k = 6–20",
              fontsize=8.5, color=TEXT_SECONDARY, va="top", style="italic")
 
     core_names = sorted(names[i] for i in core_idx)
@@ -133,8 +130,8 @@ def main():
     p = A_low.shape[0]
     k = 8
 
-    T_hard, T_pred, A_high_pred = fit_hm_graph(A_low, k)
-    idx = cluster_indices(T_hard)
+    T_hard, T_pred, A_high_pred = fit_gradcap(A_low, k)
+    idx = partition_from_matrix(T_hard)
     sizes = [len(m) for m in idx]
     active = [c for c, s in enumerate(sizes) if s > 0]
     assert len(active) == 2, f"Expected 2 active clusters, found {len(active)}: {sizes}"
@@ -162,14 +159,14 @@ def main():
     draw_membership_panel(ax_text, names, core_idx, iso_idx)
     draw_network_panel(ax_net, len(core_idx), len(iso_idx), self_core, self_iso, cross_pairs)
 
-    fig.suptitle(f"hm_graph abstraction of the UK Leontief input–output graph  (p = {p}, k = {k})",
+    fig.suptitle(f"GradCAP abstraction of the UK Leontief input–output graph  (p = {p}, k = {k})",
                  fontsize=13, fontweight="bold", y=0.995)
 
-    out_dir = Path("results/leontiff")
+    out_dir = Path("results/leontief")
     out_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_dir / "hm_graph_sector_groups.png", dpi=300, bbox_inches="tight")
-    fig.savefig(out_dir / "hm_graph_sector_groups.pdf", bbox_inches="tight")
-    print(f"Saved to {out_dir / 'hm_graph_sector_groups.png'} and .pdf")
+    fig.savefig(out_dir / "gradcap_sector_groups.png", dpi=300, bbox_inches="tight")
+    fig.savefig(out_dir / "gradcap_sector_groups.pdf", bbox_inches="tight")
+    print(f"Saved to {out_dir / 'gradcap_sector_groups.png'} and .pdf")
     print(f"core self-influence beta={self_core:.4f}, isolated self-influence beta={self_iso:.4f}")
 
 

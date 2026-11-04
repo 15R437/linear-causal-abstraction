@@ -114,10 +114,6 @@ def get_S(A_low, T, partition=None):
     """
     s_i = (I - A_low[pi_i, pi_i])^-1 t_i, supported on cluster i.
     """
-
-    if T_hard is None:
-        T_hard = (T != 0).astype(int)
-    
     S = np.zeros_like(T)
     for i in range(T.shape[1]):
         if len(partition[i]) == 0:
@@ -279,3 +275,5 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=200,
                                n_free=len(sinks), n_scc=ncomp)
     
     return A_high, T, get_S(A_low, T, partition)
+
+

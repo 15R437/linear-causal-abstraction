@@ -1,25 +1,30 @@
-import sys
-from pathlib import Path
+"""Adapter exposing Unsupervised Causal Abstraction (UCA) as a baseline.
 
-# 1. Get the directory of uca.py (/Users/issy/Projects/linear-causal-abstraction/src/models)
-current_script_dir = Path(__file__).resolve().parent
+This file is the adapter only. The UCA implementation it calls
+(`unsupervised_causal_reduction`) was provided privately by that paper's authors
+and is NOT redistributed here: it is not bundled with this repository, not on
+PyPI, and not otherwise public. Obtain it from the authors directly.
 
-# 2. Go up THREE levels to reach /Users/issy/Projects/
-projects_root = current_script_dir.parent.parent.parent
-
-# 3. Point to the folder that CONTAINS the 'unsupervised_causal_reduction' package
-target_project_dir = projects_root / 'targeted-causal-reduction-unsupervisedAbstraction'
-
-sys.path.append(str(target_project_dir))
-import lightning as L
+Nothing else in this repository imports this module, so every other method runs
+without it.
+"""
 import torch
 import numpy as np
-from typing import Optional, Tuple
-from unsupervised_causal_reduction.causal_model.high_level import HighLevelCausalModel #type: ignore
-from unsupervised_causal_reduction.causal_model.low_level import LowLevelCausalModel #type: ignore
-from unsupervised_causal_reduction.data_generators.linear import LinearCausalModel #type: ignore
-from unsupervised_causal_reduction.abstraction.causal_abstraction import CausalAbstraction #type: ignore
-from unsupervised_causal_reduction.lightning.targeted_causal_reduction import UnsupervisedCausalAbstractionModel #type: ignore
+from typing import Tuple
+
+try:
+    from unsupervised_causal_reduction.causal_model.high_level import HighLevelCausalModel  # type: ignore
+    from unsupervised_causal_reduction.causal_model.low_level import LowLevelCausalModel  # type: ignore
+    from unsupervised_causal_reduction.data_generators.linear import LinearCausalModel  # type: ignore
+    from unsupervised_causal_reduction.abstraction.causal_abstraction import CausalAbstraction  # type: ignore
+    from unsupervised_causal_reduction.lightning.targeted_causal_reduction import UnsupervisedCausalAbstractionModel  # type: ignore
+except ImportError as exc:  # pragma: no cover
+    raise ImportError(
+        "The UCA baseline requires 'unsupervised_causal_reduction', which was "
+        "provided privately by the authors of Unsupervised Causal Abstraction and "
+        "is not redistributed here. It is not on PyPI; request it from the authors. "
+        "Every other method in this repo runs without it."
+    ) from exc
 
 
 class SCMLow(LowLevelCausalModel):
@@ -151,3 +156,20 @@ def test_covariance_stability():
 
 if __name__ == "__main__":
     test_covariance_stability()
+
+
+def uca(A_low, k, num_epochs=6000, **kwds):
+    """UCA baseline. Returns a SOFT, real-valued T (p x k), not a partition.
+
+    This is the one method here that cannot expose a partition: UCA learns a dense tau map
+    and never commits to a hard assignment, so callers that need clusters must binarise it
+    themselves (argmax over columns). Column-normalised before returning.
+
+    num_epochs is a fixed budget of GRADIENT STEPS (see uca_train). The previous
+    size-dependent heuristic, 1000 * int(log((p-k)*k + 1) + 1), gave 5000-8000 and was moot
+    while uca_train applied no gradient at all.
+    """
+    model = uca_model(A_low=A_low, k=k)
+    ca = uca_train(model, num_epochs)
+    T = ca.tau_map_weights.weight.cpu().detach().numpy().T
+    return T / (np.linalg.norm(T, axis=0, keepdims=True) + 1e-8)

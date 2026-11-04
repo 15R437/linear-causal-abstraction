@@ -168,20 +168,18 @@ class GradCAP(nn.Module):
 
 
 if __name__ == "__main__":
-    import os
-    import sys
     import time
 
     # This script uses the rest of the repo; put the repo root on the path so the
-    # `src.*` imports below resolve regardless of the working directory.
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
     from src.utils.generate_data import sample_low_level_graph, sample_by_noise_adjustment_any_order
     from src.utils.losses import (observation_loss, intervention_loss, graph_loss, reconstruction_loss_with_data, RAE, info_effective)
-    from src.utils.helper import get_S, is_dag, reconstruct_adj, cluster_indices
+    from src.utils.helper import get_S, is_dag, reconstruct_adj
+    from src.utils.partition import partition_from_matrix
     from src.utils.plots import visualize_causal_graph, animate_partition_training, plot_matrix
 
-    from src.algos.greedy import aoc_closure, greedy_allin, random_partition, partition_to_matrix, all_in_violation, cluster_edge_counts
+    from src.algos.greedy import aoc_closure, greedy_allin, random_partition
+    from src.utils.partition import partition_to_matrix, all_in_violation, cluster_edge_counts
     from src.algos.T_fitter import fit_abstraction_eigen
 
     p, k_gt = 100, 10
@@ -196,11 +194,11 @@ if __name__ == "__main__":
     X_test = sample_by_noise_adjustment_any_order(A_low, n_samples=10000, gennorm_param=1.8, seed=seed)
 
     def evaluate(name, T_hard, runtime, seed=seed):
-        A_high_pred, T_pred = fit_abstraction_eigen(A_low, T_hard, seed)
+        partition = [clst for clst in partition_from_matrix(T_hard) if len(clst) > 0]
+        A_high_pred, T_pred, _ = fit_abstraction_eigen(A_low, partition, seed)
         S_pred = get_S(T=T_pred, A_low=A_low, T_hard=T_hard)
-        E_high_pred = np.linalg.inv(np.eye(k) - A_high_pred)
+        E_high_pred = np.linalg.inv(np.eye(A_high_pred.shape[0]) - A_high_pred)
         A_recon = reconstruct_adj(A_high=A_high_pred, T=T_pred)
-        partition = [clst for clst in cluster_indices(T_hard) if len(clst) > 0]
         A_partition = cluster_edge_counts(A_low, partition) > 0
         allin, onechild, dag = all_in_violation(A_low, partition) == 0, A_partition.sum(axis=1).max() <= 1, is_dag(A_partition)
         # RAE unifies obs/intv on a comparable scale; info_eff charges BOTH intra-cluster
@@ -254,10 +252,61 @@ if __name__ == "__main__":
     
     evaluate("Random", T_random, random_runtime)
 
-    #animate_partition_training(A_low=A_low, history=history, save_path="timelapse/hail_mary_training.gif")
-    A_high_pred, T_pred, S_pred = fit_abstraction_eigen(A_low, T_hm, seed)
+    A_high_pred, T_pred, S_pred = fit_abstraction_eigen(
+        A_low, [clst for clst in partition_from_matrix(T_hm) if len(clst) > 0], seed)
     plot_matrix(matrix_list=[T_aoc, T_gai, T_soft], title_list=["AOC", "Greedy", "GradCAP"])
     visualize_causal_graph(A_low=A_low, T_matrix=T_pred, S_matrix=S_pred, A_high=A_high_pred)
     
 
     
+
+
+def gradcap(A_low, k, n_restarts=1, seed=0):
+    """Best-of-n_restarts GradCAP, returning a PARTITION (list of index arrays).
+
+    Each restart starts from a different randomised AOC closure and is scored on the two
+    sufficient conditions (All-In via graph_loss, plus one child per cluster); among those
+    satisfying both, the one destroying the least edge mass is returned. Both the filter and
+    the tie-break are functions of A_low and the partition only, so this is an inference-time
+    procedure and not oracle selection. Falls back to the best-by-graph_loss partition when
+    no restart satisfies both.
+
+    n_restarts defaults to 1: with the closure initialisation the per-run success rate on
+    one_child graphs is 1.000, so restarts buy nothing there. On random graphs the curve
+    saturates around 6 (0.264 -> 0.326) and 67% of problems fail on every restart.
+
+    The scoring below is genuinely matrix algebra and the torch model emits an indicator
+    matrix, so T_hard is the natural type INSIDE this function; only the return is converted.
+    """
+    from src.utils.helper import get_device
+    from src.utils.losses import graph_loss as _graph_loss
+    from .greedy import aoc_closure
+    from src.utils.partition import partition_from_matrix
+
+    device = get_device()
+    n_low = A_low.shape[0]
+    A_low_tensor = torch.from_numpy(A_low).to(torch.float32).to(device)
+    num_epochs = 1000 * int(np.log((n_low - k) * k + 1) + 1)
+
+    best, best_key = None, None
+    for r in range(n_restarts):
+        partition_init = aoc_closure(A_low, k, seed=seed * 1000 + r)
+        model = GradCAP(A_low_tensor, k, partition_init, seed=seed * 1000 + r).to(device)
+        model.train(num_epochs=num_epochs, verbose=False)
+        T_hard = model.get_partition()[0].cpu().detach().numpy()
+
+        gl = _graph_loss(A_low=A_low, T_hard=T_hard)
+        mask = (T_hard.T @ (A_low != 0).astype(float) @ T_hard) > 0
+        np.fill_diagonal(mask, False)
+        one_child = mask.sum(axis=1).max() <= 1 if k else True
+        co = T_hard @ T_hard.T
+        np.fill_diagonal(co, 0)
+        info = (np.abs(A_low) * co).sum() / max(np.abs(A_low).sum(), 1e-12)
+
+        # rank: satisfying both conditions first, then least information destroyed
+        key = (0 if (gl < 1e-8 and one_child) else 1, info if (gl < 1e-8 and one_child) else gl)
+        if best_key is None or key < best_key:
+            best, best_key = T_hard, key
+
+    # GradCAP can empty a cluster; drop those so the partition carries only live clusters
+    return [c for c in partition_from_matrix(best) if len(c)]

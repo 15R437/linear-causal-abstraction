@@ -1,6 +1,3 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.getcwd()))
 import numpy as np
 from collections import deque
 from scipy.stats import gennorm
@@ -13,7 +10,7 @@ import networkx as nx
 def generate_generalized_benchmark(n_low=90, n_high=3, blockiness=1.0, shuffle=True, seed=None, **kwds):
     """
     Generates an n-dimensional, singularity-free layered graph 
-    designed to form a perfectly convex optimization basin for hail_mary.
+    designed to form a perfectly convex optimization basin for GradCAP.
     
     Params:
         n_low (int): Total low-level nodes (must be divisible by n_high).
@@ -79,7 +76,7 @@ def generate_generalized_benchmark(n_low=90, n_high=3, blockiness=1.0, shuffle=T
 def generate_easy_benchmark(n_low=60, blockiness=1.0, cluster_balance=0.5, shuffle=True, seed=None):
     """
     Generates a low-dimensional, singularity-free graph engineered 
-    to have a convex loss landscape for the hail_mary algorithm.
+    to have a convex loss landscape for GradCAP.
     
     Params:
         n_low (int): Total low-level nodes (must be even for equal clusters).

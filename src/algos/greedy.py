@@ -1,35 +1,11 @@
 import numpy as np
 
-def partition_to_matrix(partition):
-    p = sum(len(cluster) for cluster in partition)
-    k = len(partition)
-    T = np.zeros((p, k))
-    for j, cluster in enumerate(partition):
-        T[cluster, j] = 1
-        
-    return T
+from src.utils.partition import (all_in_violation_matrix, cluster_connectivity, cluster_edge_counts,
+                           cluster_graph, intra_cluster_edges, merge_clusters,
+                           partition_to_matrix)
 
-def intra_cluster_edges(A_low, partition):
-    A_binary = (A_low != 0)
-    count = 0
-    for clst in partition:
-        if len(clst) > 1:
-            count += A_binary[np.ix_(clst,clst)].sum()
 
-    return count
 
-def cluster_graph(A_low, partition):
-    A_binary = (A_low != 0)
-    k = len(partition)
-    A_partition = np.zeros((k,k),dtype=bool)
-
-    for i in range(k):
-        for j in range(k):
-            if i == j:
-                continue
-            A_partition[i, j] = np.any(A_binary[np.ix_(partition[i], partition[j])])
-
-    return A_partition
 
 def jaccard_out(A_low):
     A_binary = (A_low != 0).astype(float)
@@ -42,53 +18,10 @@ def jaccard_out(A_low):
     np.fill_diagonal(jac, 1.0)
     return jac
 
-def cluster_connectivity(A_low, partition):
-    """
-    Returns H, the (p, k) matrix whose (r, j) entry is 1 if node r has an edge into cluster j,
-    and C, the (k, k) matrix whose (i, j) entry counts the nodes in cluster i with an edge into cluster j.
-    """
-    A_binary = (A_low != 0).astype(float)
-    p = A_low.shape[0]
-    k = len(partition)
 
-    H = np.zeros((p,k))
-    for j, clst in enumerate(partition):
-        H[:,j] = np.any(A_binary[: , clst],axis=1) # node-to-cluster connectivity matrix
 
-    C = np.zeros((k,k))
-    for i, clst in enumerate(partition):
-        C[i] = H[clst].sum(axis=0) # how many nodes in cluster i have a connection to each j
 
-    return H, C
 
-def all_in_violation_matrix(A_low, partition):
-    """(k, k) matrix whose (i, j) entry counts the nodes in cluster i with no edge into its child cluster j."""
-    _, C = cluster_connectivity(A_low, partition)
-    cluster_sizes = np.array([len(clst) for clst in partition])[:, None]
-    V = (C > 0) * (cluster_sizes - C)
-    np.fill_diagonal(V,0)
-
-    return V
-
-def all_in_violation(A_low, partition):
-    return np.sum(all_in_violation_matrix(A_low, partition))
-
-def cluster_edge_counts(A_low, partition):
-    """(k, k) matrix whose (i, j) entry counts the edges from cluster i into cluster j, with a zero diagonal."""
-    labels = np.empty(A_low.shape[0], dtype=int)
-    for c, clst in enumerate(partition):
-        labels[clst] = c
-
-    k = len(partition)
-    sources, targets = np.nonzero(A_low)
-    counts = np.bincount(labels[sources] * k + labels[targets], minlength=k * k).reshape(k, k).astype(float)
-    np.fill_diagonal(counts, 0)
-    return counts
-
-def merge_clusters(partition, i, j):
-    """Returns the partition with clusters i and j replaced by their union (appended at the end)."""
-    merged = list(partition[i]) + list(partition[j])
-    return [clst for c, clst in enumerate(partition) if c != i and c != j] + [merged]
 
 def merge_edge_counts(edge_counts, i, j):
     """Updates cluster_edge_counts to match merge_clusters(partition, i, j): rows i and j are summed into a new last row, likewise the columns."""
@@ -376,13 +309,9 @@ def random_partition(p, k, seed=None):
 
 
 if __name__ == "__main__":
-    import os
-    import sys
     import time
  
     # This script uses the rest of the repo; put the repo root on the path so the
-    # `src.*` imports below resolve regardless of the working directory.
-    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
     from src.utils.generate_data import sample_low_level_graph
     from src.utils.plots import visualize_causal_graph, plot_matrix
