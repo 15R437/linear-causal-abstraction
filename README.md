@@ -71,54 +71,53 @@ exactness and buys back reconstruction.
 ## Theoretical Overview
 
 ### Background
-We consider linear Structural Causal Models (SCMs) over a finite set of variables, i.e. a tuple $(\mathbf{X}, \mathbf{A}, \mathbf{U}, \mathbb{P}(\mathbf{U}))$ where
-* $\mathbf{A} \in \mathbb{R}^{p \times p}$ is a weight matrix,
-* $\mathbf{U} \in \mathbb{R}^{p}$ is a set of $p$ unobserved (exogenous) random variables with joint distribution $\mathbb{P}(\mathbf{U})$ and
-* $\mathbf{X} \in \mathbb{R}^{p}$ is a set of $p$ observed (endogenous) random variables determined by the equation
+We consider linear Structural Causal Models (SCMs) over a finite set of variables, i.e. a tuple $`(\mathbf{X}, \mathbf{A}, \mathbf{U}, \mathbb{P}(\mathbf{U}))`$ where
+* $`\mathbf{A} \in \mathbb{R}^{p \times p}`$ is a weight matrix,
+* $`\mathbf{U} \in \mathbb{R}^{p}`$ is a set of $`p`$ unobserved (exogenous) random variables with joint distribution $`\mathbb{P}(\mathbf{U})`$ and
+* $`\mathbf{X} \in \mathbb{R}^{p}`$ is a set of $`p`$ observed (endogenous) random variables determined by the equation
 
-$$
+```math
 \mathbf{X} = \mathbf{A}^{T}\mathbf{X} + \mathbf{U}
-$$
+```
 
-Given a linear Structural Causal Model (SCM) $`\mathcal{M}_{\mathcal{L}}`$ over $p$ variables $`\mathbf{X} = (X_{1},\dots X_{p})`$, we can define
-* a $k$-partition of the variables, i.e. a surjective map $\pi^{-1} : \{1,...,p\} \rightarrow \{1,...,k\}$ where we write $\pi(i) := (\pi^{-1})^{-1}(i)$ for the set of variables in cluster $i$,
+Given a linear Structural Causal Model (SCM) $`\mathcal{M}_{\mathcal{L}}`$ over $`p`$ variables $`\mathbf{X} = (X_{1},\dots X_{p})`$, we can define
+* a $`k`$-partition of the variables, i.e. a surjective map $`\pi^{-1} : \{1,...,p\} \rightarrow \{1,...,k\}`$ where we write $`\pi(i) := (\pi^{-1})^{-1}(i)`$ for the set of variables in cluster $`i`$,
 
-* a linear aggregation map $\mathbf{T} \in \mathbb{R}^{p\times k}$ such that the $(r,j)$'th entry of $\mathbf{T}$ is non-zero if and only if $r \in \pi(j)$ and
+* a linear aggregation map $`\mathbf{T} \in \mathbb{R}^{p\times k}`$ such that the $`(r,j)`$'th entry of $`\mathbf{T}`$ is non-zero if and only if $`r \in \pi(j)`$ and
 
-* an exogenous aggregation map $\mathbf{S} \in \mathbb{R}^{p \times k}$ such that the $(r,j)$'th entry of $\mathbf{S}$ is zero whenever $r \notin \pi(j)$.
+* an exogenous aggregation map $`\mathbf{S} \in \mathbb{R}^{p \times k}`$ such that the $`(r,j)`$'th entry of $`\mathbf{S}`$ is zero whenever $`r \notin \pi(j)`$.
 
-These define variables $\tilde{\mathbf{X}} := \mathbf{T}^{T}\mathbf{X}$ and $\tilde{\mathbf{U}} := \mathbf{S}^{T}\mathbf{U}$ over which we can define a linear SCM $`\mathcal{M}_{\mathcal{H}}`$ with weight matrix $\tilde{\mathbf{A}} \in \mathbb{R}^{k\times k}$.
+These define variables $`\tilde{\mathbf{X}} := \mathbf{T}^{T}\mathbf{X}`$ and $`\tilde{\mathbf{U}} := \mathbf{S}^{T}\mathbf{U}`$ over which we can define a linear SCM $`\mathcal{M}_{\mathcal{H}}`$ with weight matrix $`\tilde{\mathbf{A}} \in \mathbb{R}^{k\times k}`$.
 
-Causal Abstraction (CA) as defined by [Beckers & Halpern (2019)][bh19] requires that the abstraction mapping $(\mathbf{X},\mathbf{U}) \xmapsto{\,(\mathbf{T},\,\mathbf{S})\,} (\tilde{\mathbf{X}}, \tilde{\mathbf{U}})$ remains consistent under *do-interventions* in both models; essentially we want the operations *intervene* and *abstract* to commute. [Massidda et al. (2024)][massidda24] show that for linear SCMs with acyclic graphs and linear maps, CA is equivalent to
+Causal Abstraction (CA) as defined by [Beckers & Halpern (2019)][bh19] requires that the abstraction mapping $`(\mathbf{X},\mathbf{U}) \overset{(\mathbf{T},\,\mathbf{S})}{\longmapsto} (\tilde{\mathbf{X}}, \tilde{\mathbf{U}})`$ remains consistent under *do-interventions* in both models; essentially we want the operations *intervene* and *abstract* to commute. [Massidda et al. (2024)][massidda24] show that for linear SCMs with acyclic graphs and linear maps, CA is equivalent to
 
 <a id="eq-collinearity"></a>
 
-$$
-\mathbf{A}_{\pi(i)\pi(j)}(\mathbf{I} - \mathbf{A}_{\pi(j)\pi(j)})^{-1}\mathbf{T}_{\pi(j)j}
-  = \tilde{A}_{ij}\mathbf{T}_{\pi(i)i}. \tag{1}
-$$
+```math
+\mathbf{A}_{\pi(i)\pi(j)}(\mathbf{I} - \mathbf{A}_{\pi(j)\pi(j)})^{-1}\mathbf{T}_{\pi(j)j} = \tilde{A}_{ij}\mathbf{T}_{\pi(i)i}. \qquad (1)
+```
 
-They also provide a necessary condition on the partition $\pi$, which we call the **All-In** condition.
+They also provide a necessary condition on the partition $`\pi`$, which we call the **All-In** condition.
 
 > **Definition (All-In).**
-> $\pi$ satisfies the **All-In** condition if and only if, for all distinct clusters $\pi(i), \pi(j)$, *either* there are no cross-cluster edges $`X_{r} \rightarrow X_{s}`$ (with $r \in \pi(i)$ and $s \in \pi(j)$), *or* every variable $r \in \pi(i)$ has an edge $`X_{r} \rightarrow X_{s}`$ to some variable $s \in \pi(j)$.
+> $`\pi`$ satisfies the **All-In** condition if and only if, for all distinct clusters $`\pi(i), \pi(j)`$, *either* there are no cross-cluster edges $`X_{r} \rightarrow X_{s}`$ (with $`r \in \pi(i)`$ and $`s \in \pi(j)`$), *or* every variable $`r \in \pi(i)`$ has an edge $`X_{r} \rightarrow X_{s}`$ to some variable $`s \in \pi(j)`$.
 
 ### Contributions
- * We show that equation [(1)](#eq-collinearity) also applies to SCMs with weight matrices $\mathbf{A}$ that are non-negative and satisfy $\rho(\mathbf{A}) < 1$. This covers realistic economic input-output matrices which are typically cyclic but satisfy these conditions.
+ * We show that equation [(1)](#eq-collinearity) also applies to SCMs with weight matrices $`\mathbf{A}`$ that are non-negative and satisfy $`\rho(\mathbf{A}) < 1`$. This covers realistic economic input-output matrices which are typically cyclic but satisfy these conditions.
 
- * We show that in addition to the All-In condition, the following is a sufficient condition on $\pi$
+ * We show that in addition to the All-In condition, the following is a sufficient condition on $`\pi`$
 
 > **Definition (One-Child).**
-> $\pi$ satisfies the **One-Child** condition if and only if each cluster $\pi(i)$ has at most one child cluster outside of itself (i.e. $`\lvert \{\pi^{-1}(s) \mid X_{r} \rightarrow X_{s} \ \text{ for some } r \in \pi(i), \ s \notin \pi(i)\} \rvert \leq 1`$).
+> $`\pi`$ satisfies the **One-Child** condition if and only if each cluster $`\pi(i)`$ has at most one child cluster outside of itself (i.e. $`\lvert \{\pi^{-1}(s) \mid X_{r} \rightarrow X_{s} \ \text{ for some } r \in \pi(i), \ s \notin \pi(i)\} \rvert \leq 1`$).
 
-* We propose unsupervised greedy algorithms for learning partitions $\pi$ that satisfy the All-In and/or One-Child conditions as well as a gradient-based algorithm.
+* We propose unsupervised greedy algorithms for learning partitions $`\pi`$ that satisfy the All-In and/or One-Child conditions as well as a gradient-based algorithm.
 
-* We propose an algorithm for learning $\mathbf{T}$ (and $\mathbf{S}$) given a partition $\pi$.
+* We propose an algorithm for learning $`\mathbf{T}`$ (and $`\mathbf{S}`$) given a partition $`\pi`$.
 
 ## Experiments
 
 Every figure and table below is produced by the scripts in this repository; the command that
-regenerates each one is given beneath it. $p = 100$, $k = 10$ unless stated.
+regenerates each one is given beneath it. $`p = 100`$, $`k = 10`$ unless stated.
 
 ### Learning the partition
 
@@ -144,7 +143,7 @@ the ground-truth partition (for which an exact causal abstraction is known to ex
 
 ### Fitting T on a given partition
 
-Given a partition of a causal graph $\pi$, we define a **cluster graph** by taking the partition clusters as nodes and drawing edges between these nodes if there is a low-level edge between the clusters (i.e. a "quotient graph" over clusters). For each cluster $i$, we want to learn a vector $`\mathbf{t}_{i} := \mathbf{T}_{\pi(i)i}`$ satisfying equation [(1)](#eq-collinearity). Write $`\mathbf{M}_{ij} := \mathbf{A}_{\pi(i)\pi(j)}(\mathbf{I} - \mathbf{A}_{\pi(j)\pi(j)})^{-1}`$ and observe that $`\mathbf{t}_{j}`$ determines the direction of $`\mathbf{t}_{i}`$ whenever there is an edge $i \rightarrow j$ in the cluster graph. We thus parameterise the $`\mathbf{t}_{j}`$ for the sink clusters and require that for non-sink clusters $i$ with children $`j_{1},\dots,j_{l}`$, $`\mathbf{M}_{ij_{1}}\mathbf{t}_{j_{1}},\dots,\mathbf{M}_{ij_{l}}\mathbf{t}_{j_{l}}`$ are parallel vectors. Taking the average direction we can determine $`\mathbf{t}_{i}`$ and propagate the same requirement to its parents and so on. This sets up a smooth, non-convex least-squares optimisation problem which we can solve using off-the-shelf methods. Where there are cycles, we also parameterise $`\mathbf{t}_{i}`$ for one cluster in each **cyclic component** of the cluster graph — a maximal group of clusters that can all reach one another.
+Given a partition of a causal graph $`\pi`$, we define a **cluster graph** by taking the partition clusters as nodes and drawing edges between these nodes if there is a low-level edge between the clusters (i.e. a "quotient graph" over clusters). For each cluster $`i`$, we want to learn a vector $`\mathbf{t}_{i} := \mathbf{T}_{\pi(i)i}`$ satisfying equation [(1)](#eq-collinearity). Write $`\mathbf{M}_{ij} := \mathbf{A}_{\pi(i)\pi(j)}(\mathbf{I} - \mathbf{A}_{\pi(j)\pi(j)})^{-1}`$ and observe that $`\mathbf{t}_{j}`$ determines the direction of $`\mathbf{t}_{i}`$ whenever there is an edge $`i \rightarrow j`$ in the cluster graph. We thus parameterise the $`\mathbf{t}_{j}`$ for the sink clusters and require that for non-sink clusters $`i`$ with children $`j_{1},\dots,j_{l}`$, $`\mathbf{M}_{ij_{1}}\mathbf{t}_{j_{1}},\dots,\mathbf{M}_{ij_{l}}\mathbf{t}_{j_{l}}`$ are parallel vectors. Taking the average direction we can determine $`\mathbf{t}_{i}`$ and propagate the same requirement to its parents and so on. This sets up a smooth, non-convex least-squares optimisation problem which we can solve using off-the-shelf methods. Where there are cycles, we also parameterise $`\mathbf{t}_{i}`$ for one cluster in each **cyclic component** of the cluster graph — a maximal group of clusters that can all reach one another.
 
 <p align="center">
   <img src="assets/fig2_sweeps.png" width="900" alt="RAE and reconstruction error against problem size p and cluster budget k, for ground-truth, AOC Closure, OC Closure, Greedy All-In and random partitions">
@@ -155,7 +154,7 @@ Given a partition of a causal graph $\pi$, we define a **cluster graph** by taki
 Regenerate with `python experiments/synthetic/sweeps.py` (about 13 minutes). This validates our theoretical results about the sufficiency of
 the All-In and One-Child conditions since AOC Closure always achieves 0 RAE.</sub>
 
-Given a partition, we can then learn $(\mathbf{T},\tilde{\mathbf{A}}, \mathbf{S})$. Note that $\mathbf{S}$ and $\tilde{\mathbf{A}}$ (`A_high`) follow analytically from $\mathbf{T}$ and $\mathbf{A}$ (`A_low`). The relevant metrics for a partition are
+Given a partition, we can then learn $`(\mathbf{T},\tilde{\mathbf{A}}, \mathbf{S})`$. Note that $`\mathbf{S}`$ and $`\tilde{\mathbf{A}}`$ (`A_high`) follow analytically from $`\mathbf{T}`$ and $`\mathbf{A}`$ (`A_low`). The relevant metrics for a partition are
 
 **RAE**, which measures the exactness of the abstraction (i.e. how much it violates the formal conditions) relative to the natural variation of the abstracted variables under the model's own exogenous distribution.
 
@@ -164,19 +163,19 @@ Given a partition, we can then learn $(\mathbf{T},\tilde{\mathbf{A}}, \mathbf{S}
 Note that both are important and often need to be traded off: RAE can be driven to zero by collapsing
 every low-level variable into one cluster while we can maximise ReconErr by not abstracting at all.
 
-**A caveat on cost:** Learning the partition is relatively cheap but fitting $\mathbf{T}$ via
-`fit_abstraction_eigen` is the runtime bottleneck. Suppose there are $S$ sink clusters and
-$C$ cyclic components. If each cluster has size $c \approx p/k$ then we have $(S + C)c$
+**A caveat on cost:** Learning the partition is relatively cheap but fitting $`\mathbf{T}`$ via
+`fit_abstraction_eigen` is the runtime bottleneck. Suppose there are $`S`$ sink clusters and
+$`C`$ cyclic components. If each cluster has size $`c \approx p/k`$ then we have $`(S + C)c`$
 learnable parameters. The objective requires computing $`\mathbf{M}_{ij}\mathbf{t}_{j}`$ for
-each cluster-graph edge $i \rightarrow j$, and so if the cluster graph has density $d$, this is
-computed $dk(k-1)$ times with $O(c^{2})$ operations each time. Over $R$ restarts and $I$
-iterations, the learning algorithm for $\mathbf{T}$ is
+each cluster-graph edge $`i \rightarrow j`$, and so if the cluster graph has density $`d`$, this is
+computed $`dk(k-1)`$ times with $`O(c^{2})`$ operations each time. Over $`R`$ restarts and $`I`$
+iterations, the learning algorithm for $`\mathbf{T}`$ is
 
-$$
+```math
 O\left(R \cdot I \cdot d \cdot (S + C) \cdot \frac{p^{3}}{k}\right)
-$$
+```
 
-which is **cubic in $p$** in the worst case. In fact since $S + C \leq k$, the bound simplifies to $O(R \cdot I \cdot d \cdot p^{3})$.
+which is **cubic in $`p`$** in the worst case. In fact since $`S + C \leq k`$, the bound simplifies to $`O(R \cdot I \cdot d \cdot p^{3})`$.
 The Jacobian is computed in closed form rather than by finite differences, which cuts the
 constant by about 7×.
 
@@ -203,9 +202,9 @@ Regenerate with `python experiments/synthetic/benchmark.py` (about 3 minutes); t
 are drawn under `--seed 0`, so the numbers quoted below come back exactly. `--seed -1` draws
 fresh ones, and at 20 instances the spread between draws is wider than the gaps below.</sub>
 
-Fix a tolerance $\alpha$ in advance, and accept a learned abstraction only if its RAE is
-within $\alpha$ *and* it reconstructs better than AOC Closure; otherwise fall back to AOC Closure, which
-is guaranteed to admit one. Each curve represents the typical `ReconErr` you would have if you had the hard constraint RAE $\leq \alpha$ and access to AOC Closure as a fallback.
+Fix a tolerance $`\alpha`$ in advance, and accept a learned abstraction only if its RAE is
+within $`\alpha`$ *and* it reconstructs better than AOC Closure; otherwise fall back to AOC Closure, which
+is guaranteed to admit one. Each curve represents the typical `ReconErr` you would have if you had the hard constraint RAE $`\leq \alpha`$ and access to AOC Closure as a fallback.
 
 **Greedy All-In is the only method that meaningfully trades RAE tolerance for ReconErr.** As RAE tolerance loosens, Greedy All-In's ReconErr falls from `0.994` to
 `0.878` at `density 0.3`, and from `1.011` to `0.762` at `density 0.5`, while every other method barely deviates from the AOC Closure line near `1.00`.
@@ -216,14 +215,14 @@ is guaranteed to admit one. Each curve represents the typical `ReconErr` you wou
   <img src="assets/fig4_leontief.png" width="900" alt="Abstractions of the UK Leontief input-output graph learned by AOC Closure and by Greedy All-In, as cluster bubbles sized by sector count">
 </p>
 
-172 UK sector and factor-input rows from EXIOBASE, pruned at $\lvert a \rvert > 0.05$, which leaves 140
-that still carry an edge. This is the cyclic, non-negative, $\rho(\mathbf{A}) < 1$ regime the theory here
+172 UK sector and factor-input rows from EXIOBASE, pruned at $`\lvert a \rvert > 0.05`$, which leaves 140
+that still carry an edge. This is the cyclic, non-negative, $`\rho(\mathbf{A}) < 1`$ regime the theory here
 extends to and that earlier work excluded. Each high-level node is labelled by its
 highest-weighted member.
 Both methods reach an exact abstraction here — RAE `4.8e-17` for **AOC Closure** and
 `4.4e-16` for **Greedy All-In** — so on this economy the two differ only in how much they
 tell you. AOC Closure collapses 101 of the 140 sectors into a single cluster and buries
-`61.3%` of the edges, reconstructing $\mathbf{A}$ marginally better than an edgeless graph (ReconErr `0.984`).
+`61.3%` of the edges, reconstructing $`\mathbf{A}`$ marginally better than an edgeless graph (ReconErr `0.984`).
 Greedy All-In buries `19.2%` and reaches ReconErr `0.956`.
 
 <sub>Regenerate with `python experiments/leontief/figure.py` (needs `data/A_low.npy` and
