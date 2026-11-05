@@ -330,7 +330,7 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
     kids_of = {i: [int(j) for j in np.where(M[i])[0] if (i, int(j)) in Mb] for i in range(k)}
     edges = [(i, j) for i in range(k) for j in kids_of[i]]        # every quotient edge
 
-    # ---- THE PLAN: ('seed', i) -> t_i is free; ('vote', i, kids) -> t_i from those children.
+    # ('seed', i) -> t_i is free; ('vote', i, kids) -> t_i determined from t_j of children.
     # Structural, so built once: the condensation is walked children-first, and inside an SCC
     # a member becomes votable as soon as one of its children is determined (the reverse of a
     # strongly connected graph is strongly connected, so one seed reaches every member).

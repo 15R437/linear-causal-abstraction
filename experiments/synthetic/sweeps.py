@@ -1,4 +1,5 @@
-"""Reproduces the "Optimizing T" figure: how RAE and ReconErr move as the problem grows.
+"""Reproduces the "Optimizing T" figures: how RAE, ReconErr and the cost of fitting T move
+as the problem grows.
 
 Two sweeps, one per column:
 
@@ -15,11 +16,18 @@ and AOC Closure) and nowhere near it for a random partition. ReconErr asks wheth
 abstraction says anything -- a method can drive RAE to zero by collapsing everything into one
 cluster, and ReconErr is what catches that. Neither number means much without the other.
 
+A THIRD QUANTITY, on its own figure. Each fit is timed, and `draw_runtime` plots that cost
+on the same two axes with log-log scales and a fitted exponent per method. It is a separate
+figure rather than a third row because a power law only reads as a straight line on log-log
+axes, and the other two rows want a linear x.
+
 Each point is the median over N_INSTANCES independently sampled graphs, with the band the
 interquartile range. The spread is wide: these are properties of a single draw, not of the
 method, and the IQR is the honest way to show that.
 
-    python experiments/synthetic/sweeps.py              # -> assets/fig2_sweeps.png (about 13 min)
+    python experiments/synthetic/sweeps.py              # -> assets/fig2_sweeps.png
+                                                        #  + assets/fig2b_fit_scaling.png
+                                                        #    (about 13 min)
     python experiments/synthetic/sweeps.py --from-csv results/sweeps/<run>/metrics.csv
 """
 
@@ -42,6 +50,7 @@ import numpy as np
 import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 from src.utils.generate_data import sample_low_level_graph
 from src.algos.greedy import aoc_closure, oc_closure, greedy_allin, random_partition
@@ -86,20 +95,30 @@ STYLE = {
 
 
 def evaluate(A_low, partition, E_low):
-    """RAE and ReconErr for one partition, via the closed-form fitter."""
+    """RAE, ReconErr and fitter wall time for one partition.
+
+    The clock covers `fit_abstraction_eigen` alone -- not the partition search that produced
+    `partition`, and not the metrics computed from its output -- so the third row of the
+    figure is the cost of fitting T and nothing else. One BLAS thread (set at import), one
+    process, so the timings are comparable across settings.
+    """
     partition = [c for c in partition if len(c)]
+    t0 = time.perf_counter()
     A_high, T, S = fit_abstraction_eigen(A_low=A_low, partition=partition)
+    secs = time.perf_counter() - t0
     A_recon = reconstruct_adj(A_high=A_high, T=T)
     return (RAE(A_low=A_low, T=T, A_high=A_high, S=S, E_low=E_low),
-            reconstruction_loss(A_low=A_low, T=T, A_high=A_high, A_hat=A_recon))
+            reconstruction_loss(A_low=A_low, T=T, A_high=A_high, A_hat=A_recon),
+            secs)
 
 
 def run(n_instances=N_INSTANCES, out_dir=None, resume=None, verbose=True):
     """Both sweeps, appending to a CSV as it goes so a long run is never lost.
 
-    The large-k settings are the expensive ones -- the fitter pins cyclic clusters by
-    enumerating cycles in the quotient, and at k = 20 with a dense quotient that is both slow
-    and memory-hungry, enough to get the process killed on a small machine. Pass `resume`
+    The large-k settings are the expensive ones -- the fitter frees one cluster per cyclic
+    SCC and warm-starts it from a cycle found in the quotient, and at k = 20 with a dense
+    quotient that is both slow and memory-hungry, enough to get the process killed on a
+    small machine. Pass `resume`
     with an earlier run's metrics.csv and every setting already complete in it is carried
     forward untouched, so a kill costs one setting rather than the whole sweep.
     """
@@ -143,9 +162,9 @@ def run(n_instances=N_INSTANCES, out_dir=None, resume=None, verbose=True):
             batch = []
             for name, fn in METHODS.items():
                 partition = gt if fn is None else fn(A_low, k, seed)
-                rae, recon = evaluate(A_low, partition, E_low)
+                rae, recon, secs = evaluate(A_low, partition, E_low)
                 batch.append(dict(panel=panel, p=p, k=k, seed=seed, method=name,
-                                  rae=rae, recon=recon))
+                                  rae=rae, recon=recon, secs=secs))
 
             rows.extend(batch)
             pd.DataFrame(batch).to_csv(path, mode='a', index=False,
@@ -204,15 +223,71 @@ def draw(df, save_to='assets/fig2_sweeps.png'):
     print(f"Saved {save_to}")
 
 
+def draw_runtime(df, save_to='assets/fig2b_fit_scaling.png'):
+    """How the cost of fitting T scales, on the same two axes and the same instances.
+
+    Log-log, because the claim is a power law: the slope of a straight line here IS the
+    exponent. The fitted exponent per method is printed in the panel, from an ordinary
+    least-squares fit of log(median seconds) on log x. Read the two panels together --
+    `p` rises at fixed p/k = 10, so the clusters stay the same size and it is the number of
+    them that grows; `k` rises at fixed p = 100, so the clusters SHRINK as they multiply,
+    which is why the cost does not simply grow with k.
+    """
+    mpl.rcParams.update({'font.family': 'serif',
+                         'font.serif': ['Times New Roman', 'DejaVu Serif'],
+                         'mathtext.fontset': 'stix'})
+    if 'secs' not in df:
+        raise SystemExit('this metrics.csv predates fit timing; re-run the sweep')
+
+    panels = [('k = p/10', 'p', r'$k = p/10$'), ('p = 100', 'k', r'$p = 100$')]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 3.6))
+    for ax, (panel, xcol, title) in zip(axes, panels):
+        sub = df[df['panel'] == panel]
+        fits = []
+        for name in METHODS:
+            g = sub[sub['method'] == name].groupby(xcol)['secs']
+            x = np.array(sorted(g.groups), dtype=float)
+            med, lo, hi = g.median(), g.quantile(0.25), g.quantile(0.75)
+            ax.plot(x, med, label=name, lw=1.4, **STYLE[name])
+            ax.fill_between(x, lo, hi, color=STYLE[name]['color'], alpha=0.13, lw=0)
+            ok = np.asarray(med) > 0
+            if ok.sum() >= 3:
+                b = np.polyfit(np.log(x[ok]), np.log(np.asarray(med)[ok]), 1)[0]
+                fits.append((name, b))
+        ax.set_xscale('log'); ax.set_yscale('log')
+        ax.set_xticks(x)
+        ax.get_xaxis().set_major_formatter(mticker.ScalarFormatter())
+        ax.get_xaxis().set_minor_formatter(mticker.NullFormatter())
+        ax.grid(alpha=0.3, lw=0.5)
+        ax.set_xlabel(xcol)
+        ax.set_title(title, fontsize=10)
+        txt = '\n'.join(r'%s: $\propto %s^{%.1f}$' % (n, xcol, b) for n, b in fits)
+        ax.text(0.03, 0.97, txt, transform=ax.transAxes, va='top', ha='left',
+                fontsize=6.5, linespacing=1.35,
+                bbox=dict(fc='white', ec='0.8', lw=0.5, alpha=0.85, pad=2.5))
+    axes[0].set_ylabel('fit time (s)')
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center', ncol=len(METHODS),
+               frameon=False, fontsize=9, bbox_to_anchor=(0.5, -0.04))
+    fig.suptitle(r'Cost of fitting $\mathbf{T}$', fontsize=11)
+    fig.tight_layout(rect=(0, 0.07, 1, 1))
+    Path(save_to).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(save_to, dpi=300, bbox_inches='tight')
+    print(f"Saved {save_to}")
+
+
 def summarise(df):
     """The medians behind the figure, so a run says something without opening the PNG."""
     for panel, xcol in [('k = p/10', 'p'), ('p = 100', 'k')]:
         sub = df[df['panel'] == panel]
         print(f"\n{panel}  (median over {sub['seed'].nunique()} instances)")
-        for metric in ('rae', 'recon'):
+        for metric in ('rae', 'recon', 'secs'):
+            if metric not in sub:
+                continue
             table = sub.pivot_table(index='method', columns=xcol, values=metric,
                                     aggfunc='median').reindex(METHODS)
-            fmt = '%.1e' if metric == 'rae' else '%.3f'
+            fmt = {'rae': '%.1e', 'recon': '%.3f', 'secs': '%.2f'}[metric]
             print(f"  {metric}:")
             print(table.to_string(float_format=lambda v: fmt % v))
 
@@ -221,6 +296,8 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--instances', type=int, default=N_INSTANCES)
     ap.add_argument('--out', default='assets/fig2_sweeps.png')
+    ap.add_argument('--runtime-out', default='assets/fig2b_fit_scaling.png',
+                    help='the fit-cost figure; needs a metrics.csv with a `secs` column')
     ap.add_argument('--from-csv', default=None,
                     help='replot an earlier run instead of recomputing')
     ap.add_argument('--resume', default=None,
@@ -231,3 +308,5 @@ if __name__ == '__main__':
           else run(n_instances=args.instances, resume=args.resume))
     summarise(df)
     draw(df, save_to=args.out)
+    if 'secs' in df:
+        draw_runtime(df, save_to=args.runtime_out)
