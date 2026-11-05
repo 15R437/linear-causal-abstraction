@@ -19,7 +19,7 @@ Each point is the median over N_INSTANCES independently sampled graphs, with the
 interquartile range. The spread is wide: these are properties of a single draw, not of the
 method, and the IQR is the honest way to show that.
 
-    python experiments/synthetic/sweeps.py              # -> assets/fig2_sweeps.png (about 50 min)
+    python experiments/synthetic/sweeps.py              # -> assets/fig2_sweeps.png (about 13 min)
     python experiments/synthetic/sweeps.py --from-csv results/sweeps/<run>/metrics.csv
 """
 

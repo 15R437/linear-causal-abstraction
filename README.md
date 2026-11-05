@@ -149,7 +149,7 @@ the ground-truth partition (for which an exact causal abstraction is known to sc
 
 <sub>Median over 20 instances, shaded band the interquartile range. Density 0.5, blockiness
 0.8; the generating model has `k` clusters and every learner is given a budget of `k`.
-Regenerate with `python experiments/synthetic/sweeps.py` (about 4 minutes). This validates our theoretical results about the sufficiency of
+Regenerate with `python experiments/synthetic/sweeps.py` (about 13 minutes). This validates our theoretical results about the sufficiency of
 the All-In and One-Child conditions since AOC Closure always achieves 0 RAE.</sub>
 
 Given a partition, fit `(T, A_high, S)`. The relevant metrics for a partition are
@@ -163,14 +163,13 @@ every low-level variable into one cluster while we can maximise ReconErr by not 
 
 **A caveat on cost: the fitter, not the partition search, is the bottleneck.** Learning the
 partition is cheap; fitting `T` on it is not, and almost all of this figure's runtime is
-inside `fit_abstraction_eigen`. Cyclic SCCs are pinned in closed form and everything
-downstream is propagated, so the only free parameters are the entries of `T` on the `S` sink
-clusters — about `S c` of them, for mean cluster size `c ≈ p/k`, rather than `p`. One
-propagation costs `O(E c²)` for `E` quotient edges, and each step needs the Jacobian of the
-residual with respect to all `S c` parameters. Over `R` restarts and `I` iterations at
-quotient density `q`, the search is `O(R · I · q · S · p³ / k)` — **cubic in `p`**, which is
-the scaling the panels show. The Jacobian is computed in closed form rather than by finite
-differences, which does not change that complexity but cuts the constant by about 7×.
+inside `fit_abstraction_eigen`. Its free parameters are the columns of `T` on the `S` sink
+clusters plus one cluster per cyclic SCC (`C` of them); every other cluster is propagated up
+from its children, and every quotient edge contributes a residual. That is about `(S + C) c`
+parameters for mean cluster size `c ≈ p/k`, rather than `p`, so over `R` restarts and `I`
+iterations at quotient density `q` the search is `O(R · I · q · (S + C) · p³ / k)` — **cubic
+in `p`**, which is the scaling the panels show. The Jacobian is computed in closed form
+rather than by finite differences, which cuts the constant by about 7×.
 
 ### The exactness–informativeness trade-off
 
@@ -179,7 +178,9 @@ differences, which does not change that complexity but cuts the constant by abou
 </p>
 
 <sub>Median over 20 instances. `p = 100`, `k = 10`, blockiness 0.8, 12 closure restarts.
-Regenerate with `python experiments/synthetic/benchmark.py` (about 3 minutes).</sub>
+Regenerate with `python experiments/synthetic/benchmark.py` (about 3 minutes); the instances
+are drawn under `--seed 0`, so the numbers quoted below come back exactly. `--seed -1` draws
+fresh ones, and at 20 instances the spread between draws is wider than the gaps below.</sub>
 
 Fix a tolerance `α` in advance, and accept a learned abstraction only if its RAE is within
 `α` *and* it reconstructs better than AOC Closure; otherwise fall back to AOC Closure, which
@@ -188,12 +189,13 @@ is guaranteed to admit one. Each curve is therefore what you would actually ship
 
 **Greedy All-In is the only method that converts a loosened tolerance into a more informative
 model.** AOC Closure, OC Closure and a random partition are flat: their reconstruction never
-improves, however much abstraction error you are willing to tolerate (AOC Closure moves by
-`0.000` across the whole range, OC Closure by `0.001` and random by `0.006`). The gain grows
-with density — Greedy All-In falls from `0.998` to `0.875` at `density 0.3`, and from `1.000`
-to `0.723` at `density 0.5`, while everything else sits at `1.00`. The knee is at
-`α ≈ 3 × 10⁻¹` in both panels: below it the curve is nearly flat, above it the whole gain
-arrives at once.
+improves, however much abstraction error you are willing to tolerate (AOC Closure and OC
+Closure move by `0.000` across the whole range, random by `0.008` at `density 0.3` and
+`0.022` at `density 0.5`). The gain grows with density — Greedy All-In falls from `0.994` to
+`0.878` at `density 0.3`, and from `1.011` to `0.762` at `density 0.5`, while everything else
+sits at `1.00`. Below the knee the curve is nearly flat and above it the gain arrives at
+once; the denser graph starts paying out sooner, with the knee at `α ≈ 3 × 10⁻¹` at
+`density 0.3` against `α ≈ 8 × 10⁻²` at `density 0.5`.
 
 ### A UK input–output economy
 

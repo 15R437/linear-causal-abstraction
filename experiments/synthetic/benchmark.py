@@ -39,11 +39,13 @@ from src.utils.plots import plot_results, plot_shared_legend
 # experiments/synthetic/partition_table.py.
 N_RESTARTS = 12
 
-METHODS = {'aoc_closure': lambda A_low, k, **kw: aoc_closure(A_low, k, n_restarts=N_RESTARTS),
-           'greedy_allin': lambda A_low, k, **kw: greedy_allin(A_low, k),
-           'oc_closure': lambda A_low, k, **kw: oc_closure(A_low, k, n_restarts=N_RESTARTS),
-           'gradcap': gradcap,
-           'random': lambda A_low, k, **kw: random_partition(A_low.shape[0], k)}
+# Every entry takes `seed` and uses it, so a run with `easy_benchmark(seed=...)` is
+# reproducible end to end. `greedy_allin` is deterministic given (A_low, k) and ignores it.
+METHODS = {'aoc_closure': lambda A_low, k, seed=None, **kw: aoc_closure(A_low, k, n_restarts=N_RESTARTS, seed=seed),
+           'greedy_allin': lambda A_low, k, seed=None, **kw: greedy_allin(A_low, k),
+           'oc_closure': lambda A_low, k, seed=None, **kw: oc_closure(A_low, k, n_restarts=N_RESTARTS, seed=seed),
+           'gradcap': lambda A_low, k, seed=None, **kw: gradcap(A_low, k, seed=0 if seed is None else seed),
+           'random': lambda A_low, k, seed=None, **kw: random_partition(A_low.shape[0], k, seed=seed)}
 
 # regime = (n_low, n_high, k_list, method_name_list)
 regimes = [(10*n_high, n_high, list(range(n_high, 10*n_high + 1, n_high)),['aoc_closure','greedy_allin','oc_closure','uca','random']) for n_high in [5,10,15,20]
@@ -57,13 +59,23 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                    METHODS=METHODS,
                    graph_type='random',
                    max_attempts=10,
+                   seed=None,
                    output_subdir="benchmark_run_v1"):
+    """Run the benchmark grid, appending one row per (trial, setting, k, method) to metrics.csv.
+
+    `seed` makes the whole run reproducible. Every instance draw gets its own seed, derived
+    as SeedSequence([seed, trial, setting_index]), and that seed is passed to the graph
+    sampler, the test-data sampler and each method, and recorded in the `seed` column. Pass
+    seed=None for a fresh unseeded draw -- the old behaviour, under which the figures this
+    script produces could not be regenerated, not even approximately: at 20 trials the
+    run-to-run spread of the fig3 endpoints is wider than the effect sizes quoted for them.
+    """
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     folder = Path(f"results/synthetic/{timestamp}_{output_subdir}")
     folder.mkdir(parents=True, exist_ok=True)
 
-    config = {'num_trials':num_trials, 'regimes':regime_list}
+    config = {'num_trials':num_trials, 'regimes':regime_list, 'seed':seed}
     with open(folder/"config.yaml", "w") as f:
         yaml.dump(config,f)
     
@@ -71,15 +83,19 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
     header_written = False
     for n in range(num_trials):
         start_time = time.time()
-        for regime, density, blockiness, het, internal_density in itertools.product(regime_list, density_list, blockiness_list, heterogeneity_list, internal_density_list):
+        for s_i, (regime, density, blockiness, het, internal_density) in enumerate(itertools.product(regime_list, density_list, blockiness_list, heterogeneity_list, internal_density_list)):
             n_low,n_high,k_list,method_name_list = regime
+            # One seed per (trial, setting). Independent streams, and stable under adding
+            # trials or reordering the lists, which a running counter would not be.
+            inst_seed = (None if seed is None else
+                         int(np.random.SeedSequence([seed, n, s_i]).generate_state(1)[0]))
             density = density if density is not None else 0.4
             blockiness = blockiness if blockiness is not None else 0.5
             internal_density = internal_density if internal_density is not None else 0.
             het = het if het is not None else 0.1
-            A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False, graph_type=graph_type, max_attempts=max_attempts)
+            A_low, T_gt, S_gt, A_high_gt = sample_low_level_graph(n_low=n_low,n_high=n_high,density=density,blockiness=blockiness,heterogeneity=het, internal_density=internal_density, shuffle=True, internal=False, graph_type=graph_type, max_attempts=max_attempts, seed=inst_seed)
             E_low = np.linalg.inv(np.eye(n_low) - A_low)
-            X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=None)
+            X_test = sample_by_noise_adjustment_any_order(A_low,n_samples=10000,gennorm_param=1.8,seed=inst_seed)
 
             for k in k_list:
                 for method_name in method_name_list:
@@ -87,7 +103,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
 
                     tracemalloc.start()
                     method_start = time.perf_counter()
-                    output = method_fn(A_low=A_low, k=k)
+                    output = method_fn(A_low=A_low, k=k, seed=inst_seed)
                     runtime = time.perf_counter() - method_start
                     _, peak = tracemalloc.get_traced_memory()
                     tracemalloc.stop()
@@ -113,6 +129,7 @@ def easy_benchmark(num_trials=10,regime_list=regimes,
                     abs_residual = abstraction_residual(A_low=A_low,T=T_pred,A_high=A_high_pred)
                     new_result = [{'Approach': method_name,
                                     'trial': n,
+                                    'seed': inst_seed,
                                     'n_low': n_low,
                                     'n_high': n_high,
                                     'ratio': n_low/n_high,
@@ -316,6 +333,9 @@ if __name__ == '__main__':
     ap.add_argument('--trials', type=int, default=20,
                     help='instances per density; the figure plots the median over them')
     ap.add_argument('--densities', type=float, nargs='+', default=[0.3, 0.5])
+    ap.add_argument('--seed', type=int, default=0,
+                    help='master seed; the published figure is --seed 0. Pass -1 for a '
+                         'fresh unseeded draw (not reproducible).')
     ap.add_argument('--out', default='assets/fig3_tolerance.png')
     ap.add_argument('--from-csv', default=None,
                     help='skip the run and replot an existing metrics.csv')
@@ -325,6 +345,7 @@ if __name__ == '__main__':
     if csv is None:
         folder = easy_benchmark(num_trials=args.trials, regime_list=TRADE_OFF_REGIMES,
                                 density_list=list(args.densities), blockiness_list=[0.8],
+                                seed=None if args.seed < 0 else args.seed,
                                 output_subdir='trade_off')
         csv = Path(folder) / 'metrics.csv'
     plot_trade_off(csv, densities=tuple(args.densities), save_to=args.out)

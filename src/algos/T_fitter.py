@@ -1,58 +1,100 @@
-"""Closed-form T-fitter: sinks are free, cycle members are PINNED by an eigenvector equation.
+"""T-fitter: propagate every cluster from its children, free one only where propagation has
+nothing to go on, and make EVERY quotient edge a residual.
 
-THE IDENTITY. Every quotient edge i->j imposes the Massidda collinearity condition
+THE RULE (2026-11-04). Every quotient edge i->j imposes the Massidda collinearity condition
 
     M_ij t_j  =  m_ij t_i,        M_ij := A[pi_i, pi_j] (I - A[pi_j, pi_j])^{-1},
 
-with m_ij the high-level weight. Composing it around a cycle i_1 -> i_2 -> ... -> i_1 and
-cancelling the scalars gives
+with m_ij the high-level weight. Each edge therefore ties t_i to t_j, so the constraint graph
+is the UNDIRECTED quotient graph and the system decomposes into weakly connected components
+and no finer. Within a component the fit is one rule, with no special case for cycles:
+
+    a cluster is a FREE PARAMETER iff it has no children (a sink) or it lies in a cyclic SCC
+    (one seed per SCC); every other cluster is PROPAGATED from its children's votes; and
+    every quotient edge contributes a residual
+
+        r_ij = unit(M_ij t_j) -+ t_i,          objective = sum_ij ||r_ij||^2
+
+    minimised over the seed directions.
+
+An edge consumed by propagation as a cluster's only vote has r_ij = 0 by construction; an
+edge that is one of several votes contributes the deviation from the reconciled mean, which
+is the multi-child penalty `fit_abstraction` already minimised; an edge propagation never
+used -- a cycle-closing edge, or an edge into a cluster already determined -- contributes
+the whole constraint. On a k=20 random partition that last class was 182 of 371 edges, so it
+is most of the constraint set, and the previous design dropped all of it.
+
+The schedule is purely structural -- which cluster is a seed, which votes each cluster takes,
+in what order -- so it is built once as a PLAN and the forward pass only executes it. That
+also keeps the residual vector a fixed length, which `least_squares` requires.
+
+THE IDENTITY IS NOW IMPLIED, NOT IMPOSED. Composing the collinearity conditions around a
+cycle i_1 -> ... -> i_1 and cancelling the scalars gives
 
     Pi t_{i_1} = (prod_l m_l) t_{i_1},     Pi := M_{i1 i2} M_{i2 i3} ... M_{ik i1},
 
-so a cluster on a cycle is an EIGENVECTOR of the cycle product, with eigenvalue the product
-of the high-level weights around it. Verified to 1e-16 on every cycle tested, with the
-eigenvalue matching prod A_high exactly.
+so a cluster on a cycle is an eigenvector of the cycle product with eigenvalue the product of
+the high-level weights. That is exactly what the per-edge residuals compose to: where a cycle
+member takes a single vote, t_{i_2} = unit(M_{i2 i1} t_{i1}) and the residual on the closing
+edge reads unit(Pi t_{i1}) -+ t_{i1}, which vanishes iff the eigenproblem is solved. Measured
+on a 2-cycle: the closing-edge residual is 5e-16 at each eigenvector of Pi with nonzero
+eigenvalue, against 1.2-1.4 at the null directions. On a partition admitting an exact
+abstraction the rule drives every edge to zero and the eigenvalue comes back exact to six
+figures (0.300000 = A_high[0,1] A_high[1,0]); where no exact abstraction exists the cycle
+condition is deliberately NOT enforced -- it is one equation weighed against the rest, which
+is the whole point of fitting all of them.
 
-WHY THIS IS A SOLVER AND NOT JUST AN IDENTITY. It removes the cyclic case from the
-optimiser entirely. The degrees of freedom split three ways:
+WHY THE PIN WAS REPLACED (it was wrong, not merely approximate). Until 2026-11-04 a cyclic
+SCC was solved outside the optimisation by `argmax |lambda|` on Pi, and cyclic SCCs then
+contributed NO residual at all. So a cluster inside an SCC that also pointed downstream had
+its downstream equations silently dropped: on a quotient with a 2-cycle above a sink, on the
+GENERATING partition, where an exact abstraction exists, that scored RAE 0.13-0.24 on 5 of 6
+seeds (the sink was left unconstrained, its edge in nobody's objective) where this rule
+returns 1e-15 on 6 of 6. It also mis-selected the eigenvector outright on 2 of 30 cyclic GT
+partitions at blockiness 0.8, and on most quotient-cyclic partitions that were valid but not
+the generating one. Over 315 instances (p x k in {40x4, 100x10, 100x20, 200x20}, blockiness
+{1.0, 0.8}, generating / 10%-perturbed / random partitions) the rule recovered exactness on
+15 instances the pin missed and broke none of the 130 it had.
 
-    sink cluster        t free                (nothing downstream constrains it)
-    cluster on a cycle  t PINNED by the eigenproblem -- no free parameters at all
-    anything else       t propagated from its children, as in `fit_abstraction`
+WHAT IT COSTS. The pin was closed form on a cyclic quotient; this searches. On fits that come
+out exact the warm start plus `exact_tol` ends it after one restart, so the cost is ~2x
+(median 0.0039 -> 0.0071 s). On an inexact fit all restarts run: median 0.0021 -> 0.471 s,
+~184x, p90 2.0 s, worst 6 s at p=200. Callers that fit inside a search loop should weigh
+that; `free_mode='min'` is cheaper and `n_restarts` is the dial.
 
-At blockiness 1 each block A[pi_i, pi_j] is RANK ONE, so Pi is rank one and its single
-nonzero eigenvector is the answer -- no combinatorial choice. Below blockiness 1 the blocks
-have rank 5-6 and Pi carries ~8 nonzero eigenvalues, but the true t came back as the
-LARGEST-MAGNITUDE eigenvector in every instance tested (n=4-5 per level, blockiness 0.5-0.9),
-so `argmax |lambda|` is the rule here. That last point is measured, not proved -- treat it as
-provisional below blockiness 1.
+WHAT IT BUYS ON INEXACT PARTITIONS. Median RAE 0.3776 -> 0.3440 (ratio 0.870, better on
+72% of 185 fits, Wilcoxon on the log-ratio p=2e-08), median reconstruction 0.9732 -> 0.9601.
+The MEAN is unchanged (0.4451 -> 0.4460): the quarter of fits it loses on lose by enough to
+cancel it, p90 of the ratio 1.47 and one 8.6x outlier. The objective is collinearity
+residual, not RAE, so lower residual is not guaranteed to be lower RAE.
 
-WHAT IT FIXES. `fit_abstraction_K` annihilates outright on cyclic quotients at small k
-(edge recall 0.000 at k=4 and k=6, p=100). This returns machine precision there, 40-140x
-faster, because there is nothing to search.
+PENALTY IS NOW THE TRUE DEFECT. The old `penalty` read exactly 0.000 on 98.8% of cyclic
+quotients regardless of the disagreement actually present, since no SCC contributed residual.
+It now equals sum_ij ||r_ij||^2 over every quotient edge, so it is a usable diagnostic.
 
-SINKS ARE OPTIMISED, NOT SAMPLED (fixed 2026-09-26). The abstraction condition does not pin
-a sink's direction, but the choice is not free of consequence: every cluster upstream is
-propagated through M_ij t_j, so a wrong sink corrupts the whole chain above it. How much
-depends on the block rank. At blockiness 1 the blocks are RANK ONE, so M_ij t_j is parallel
-to the block's left factor whatever t_j is -- measured min |cos| = 1.0000 over 50 random
-draws -- and the sink is genuinely irrelevant. At blockiness 0.8 the rank is 3 and that
-min |cos| falls to 0.1025, so it matters a great deal.
+THE PURE-CYCLE OBJECTIVE IS DEGENERATE, AND THE WARM START IS THE TIE-BREAK. On a terminal
+SCC reached by a single chain of votes, EVERY eigenvector of Pi with nonzero eigenvalue is an
+exact global minimum -- the residual cannot choose among them. `warm_start=True` starts the
+seed at the `argmax |lambda|` eigenvector, so that empirical rule still decides the case the
+objective is indifferent to, and it matched the old fitter to |cos| = 1.000000000000 there.
+That rule remains measured, not proved, below blockiness 1.
 
-Drawing sinks at random therefore fails outside the rank-one regime, and fails as a SEARCH
-rather than structurally: at blockiness 0.8 the RAE runs 0.210 -> 0.105 -> 0.063 -> 0.058 for
-1, 5, 50, 200 random draws, against 2.2e-05 for `fit_abstraction`, which optimises the same
-parameters with SLSQP. This now does the same -- the sink directions are the optimisation
-variables and the collinearity disagreement is the objective -- so on an acyclic quotient it
-reduces to `fit_abstraction`'s propagation, and the eigen step is a strict addition for the
-cyclic case. With NO sinks (the usual cyclic case) there is nothing to optimise and the
-result is closed form.
+STILL DIRECTIONAL. A propagated cluster takes the Frechet mean of its children's votes, which
+is the exact least-squares fit of its DOWNWARD equations and ignores how it enters its
+parents'. Freeing every cluster instead (`free_mode='all'`, or `polish=True`, which refines
+the rule's answer with one warm-started restart) lowered the objective on 154 of 185 inexact
+fits (median ratio 0.815) and was the only arm to improve the MEAN RAE as well
+(0.4451 -> 0.4176, median 0.2980), for 1.3x the time of the rule alone. It is not the default
+only because the default should be the cheapest thing that is correct.
 
-OVERDETERMINATION IS REAL AND IS NOT RECONCILED HERE. A cluster on several cycles, or one
-that both sits in an SCC and points downstream out of it, must satisfy all of those
-constraints at once. This solver takes ONE cycle per node (the shortest within its SCC) and
-lets any disagreement show up as residual rather than least-squaring it away, so the residual
-is diagnostic. `penalty` in the returned info is the multi-child/one-cycle disagreement.
+SINKS ARE OPTIMISED, NOT SAMPLED (2026-09-26). The abstraction condition does not pin a
+sink's direction, but the choice is not free of consequence: everything upstream is propagated
+through M_ij t_j. At blockiness 1 the blocks are rank one, so M_ij t_j is parallel to the
+block's left factor whatever t_j is (measured min |cos| = 1.0000 over 50 draws) and the sink
+is irrelevant; at blockiness 0.8 the rank is 3 and that min |cos| falls to 0.1025. Sampling
+sinks therefore fails outside the rank-one regime -- RAE 0.210 / 0.105 / 0.063 / 0.058 for
+1 / 5 / 50 / 200 random draws against 2.2e-05 for an optimised fit -- so they are optimisation
+variables here.
 """
 import numpy as np
 from scipy.sparse import csr_matrix
@@ -190,32 +232,62 @@ def _reconcile_d(votes, dvotes):
 
 def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
                           tol=1e-15, exact_tol=1e-28, analytic_jac=True,
+                          free_mode='cycle', warm_start=True, polish=False, x0_T=None,
                           return_info=False):
-    """Fit (A_high, T): eigen-solve cyclic SCCs, propagate the rest, OPTIMISE the sinks.
+    """Fit (A_high, T) by the rule in the module docstring.
 
     Returns (A_high, T, S), or (A_high, T, info) with return_info=True. `info` carries
-    `penalty` (collinearity disagreement at the optimum), `n_sinks`, `n_cyclic` (clusters
-    pinned by an eigenproblem) and `n_scc`.
+    `penalty` (the true total collinearity defect at the optimum), `n_free` (seeds),
+    `n_sinks`, `n_cyclic` (cyclic SCCs), `n_scc`, `n_edges` and `free_mode`.
 
-    Cyclic SCC members do not depend on the sinks, so they are solved ONCE, outside the
-    optimisation. Only the sink directions are searched, over sum(|pi_s|) parameters rather
-    than p, with `n_restarts` random starts. When there are no sinks the whole fit is closed
-    form and `n_restarts` is ignored.
+    free_mode
+        'cycle'  (default) a seed per sink and one per cyclic SCC -- the rule.
+        'min'    seeds only where propagation has nothing below: one per TERMINAL component
+                 of the condensation. Fewest parameters, and the minimum any propagation
+                 scheme can have. A cycle reached from below is then determined entirely by
+                 its downstream votes, and while its cycle-closing residual does still depend
+                 on the seed -- through the whole chain of votes -- what the seed can REACH is
+                 limited by the RANK of the blocks along that chain: t_i is confined to
+                 col(M_ij), of dimension rank(A[pi_i, pi_j]), which is ONE at blockiness 1 and
+                 3-6 below it, inside an ambient R^|pi_i|. Where the block is rank one,
+                 M_ij t_j is parallel to its left factor whatever t_j is, so the seed moves
+                 that cluster not at all. Measured on a 2-cycle above a sink: the cycle edge
+                 sat at sqrt(2) over 4000 random sink directions with a spread of 2e-16
+                 (col(M_02) one-dimensional and orthogonal to col(M_01), the eigenvector the
+                 cycle wants at distance 1.0 from the reachable set), while the two multi-vote
+                 edges swung over 0.006-0.765. Freeing a cluster in the cycle makes the whole
+                 sphere reachable instead, which on that topology is worth 0.310 -> 0.263 in
+                 median RAE and 5.36 -> 4.42 in objective over 36 inexact instances. This mode
+                 still reaches machine precision on partitions that admit an exact abstraction
+                 (36/36 there), since nothing then needs trading.
+        'all'    every cluster free: the weakly-connected-component-symmetric fit, p
+                 parameters, no privileged direction. Best paired with x0_T or `polish`.
+    warm_start
+        start the first restart with each cyclic seed at the `argmax |lambda|` eigenvector of
+        its cycle product. Strictly an initialisation -- but see the degeneracy note in the
+        module docstring, where it is also the tie-break.
+    polish
+        after the main fit, refine it with free_mode='all' and one warm-started restart,
+        keeping whichever has the lower penalty. Measured better on both median and mean RAE.
+    x0_T
+        start from the columns of an existing T instead of the eigen warm start.
 
-    `tol` and `maxiter` govern ONLY that sink search, and they set the accuracy floor of the
-    whole fit: see the note at the `least_squares` call. Exactness here is numerical, not
-    structural -- on a partition that admits an exact abstraction the fit reaches RAE ~3e-16,
-    which is where the generating abstraction itself scores.
+    `tol` and `maxiter` govern the search and set the accuracy floor of the whole fit. On a
+    partition that admits an exact abstraction this reaches RAE ~1e-15, which is where the
+    generating abstraction itself scores.
     """
+    from collections import deque
     from scipy.optimize import least_squares
 
     A = np.asarray(A_low, dtype=float)
     p = sum(len(cluster) for cluster in partition)
     k = len(partition)
 
-    if A_low.shape != (p , p):
-        raise ValueError(f"A_low shape {A_low.shape} does not match partition size {p}.")
-    
+    if A.shape != (p, p):
+        raise ValueError(f"A_low shape {A.shape} does not match partition size {p}.")
+    if free_mode not in ('cycle', 'min', 'all'):
+        raise ValueError(f"free_mode must be 'cycle', 'min' or 'all', got {free_mode!r}.")
+
     A_binary = (A != 0)
     M = np.zeros((k, k), bool)
     for i in range(k):
@@ -227,7 +299,7 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
             if i != j and len(partition[j]) and reach[partition[j]].any():
                 M[i, j] = True
 
-    # every M_ij once; the optimiser reuses them on each forward pass
+    # every M_ij once; the forward pass reuses them on each call
     Mb = {}
     for i in range(k):
         for j in np.where(M[i])[0]:
@@ -255,124 +327,170 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
     members = [np.where(comp == c)[0] for c in range(ncomp)]
     cyclic = [len(members[c]) > 1 or (len(members[c]) == 1 and M[members[c][0], members[c][0]])
               for c in range(ncomp)]
+    kids_of = {i: [int(j) for j in np.where(M[i])[0] if (i, int(j)) in Mb] for i in range(k)}
+    edges = [(i, j) for i in range(k) for j in kids_of[i]]        # every quotient edge
 
-    # ---- cyclic SCCs are pinned and independent of the sinks so we solve them once
-    t_fixed = [None] * k
-    n_cyc = 0
+    # ---- THE PLAN: ('seed', i) -> t_i is free; ('vote', i, kids) -> t_i from those children.
+    # Structural, so built once: the condensation is walked children-first, and inside an SCC
+    # a member becomes votable as soon as one of its children is determined (the reverse of a
+    # strongly connected graph is strongly connected, so one seed reaches every member).
+    plan, done, seeds = [], [False] * k, []
     for c in order:
-        if not cyclic[c]:
+        mem = [int(i) for i in members[c]]
+        if free_mode == 'all':
+            for i in mem:
+                plan.append(('seed', i))
+                seeds.append(i)
+                done[i] = True
             continue
-        for i in members[c]:
-            cyc = _cycle_within(M, comp, c, int(i))
-            if cyc is None:
+        pending = set(mem)
+        if free_mode == 'cycle' and cyclic[c]:
+            i = min(pending)                     # one free seed inside every cycle
+            plan.append(('seed', i))
+            seeds.append(i)
+            done[i] = True
+            pending.discard(i)
+        while pending:
+            ready = [i for i in sorted(pending) if any(done[j] for j in kids_of[i])]
+            if not ready:                        # nothing below: this component needs a seed
+                i = min(pending)
+                plan.append(('seed', i))
+                seeds.append(i)
+                done[i] = True
+                pending.discard(i)
                 continue
-            Pi = None
-            for a_, b_ in zip(cyc, cyc[1:] + [cyc[0]]):
-                Mm = Mb.get((a_, b_))
-                if Mm is None:
-                    Pi = None
-                    break
-                Pi = Mm if Pi is None else Pi @ Mm
-            if Pi is None:
-                continue
-            w, V = np.linalg.eig(Pi)
-            v = np.real(V[:, int(np.argmax(np.abs(w)))])
-            n = np.linalg.norm(v)
-            if n > 1e-12:
-                t_fixed[i] = v / n
-                n_cyc += 1
+            for i in ready:
+                plan.append(('vote', i, [j for j in kids_of[i] if done[j]]))
+                done[i] = True
+                pending.discard(i)
 
-    # ---- sinks: the only free parameters
-    sinks = [int(members[c][0]) for c in order
-             if not cyclic[c] and not M[members[c][0]].any()]
-    sizes = [len(partition[i]) for i in sinks]
+    sizes = [len(partition[i]) for i in seeds]
     offs = np.cumsum([0] + sizes)
     n_par = int(offs[-1])
+    slot = {i: n_ for n_, i in enumerate(seeds)}
 
     def forward(x, residuals=False, want_jac=False):
-        """Fill every t from the sink directions in x.
+        """Execute the plan, then score every quotient edge.
 
-        Returns (t, collinearity penalty), or (t, penalty, residual vector) with
-        residuals=True, or (t, penalty, residual vector, Jacobian) with want_jac=True.
-        The penalty is the sum of squares of that vector.
+        Returns (t, penalty), or with the residual vector, or with it and the Jacobian.
         """
-        t = list(t_fixed)
+        t = [None] * k
         dt = [None] * k if want_jac else None
-        if want_jac:
-            for i in range(k):
-                if t[i] is not None:                 # pinned by a cyclic SCC: no x dependence
-                    dt[i] = np.zeros((len(partition[i]), n_par))
-        for n_, i in enumerate(sinks):
+        for op in plan:
+            if op[0] == 'seed':
+                i = op[1]
+                ci = len(partition[i])
+                v = x[offs[slot[i]]:offs[slot[i] + 1]]
+                nv = np.linalg.norm(v)
+                if nv > 1e-12:
+                    t[i] = v / nv
+                    if want_jac:
+                        D = np.zeros((ci, n_par))
+                        D[:, offs[slot[i]]:offs[slot[i] + 1]] = \
+                            (np.eye(ci) - np.outer(t[i], t[i])) / nv
+                        dt[i] = D
+                else:
+                    t[i] = np.ones(ci) / np.sqrt(ci)
+                    if want_jac:
+                        dt[i] = np.zeros((ci, n_par))
+                continue
+            _, i, kids = op
             ci = len(partition[i])
-            v = x[offs[n_]:offs[n_ + 1]]
-            nv = np.linalg.norm(v)
-            if nv > 1e-12:
-                t[i] = v / nv
-                if want_jac:
-                    D = np.zeros((ci, n_par))
-                    D[:, offs[n_]:offs[n_ + 1]] = (np.eye(ci) - np.outer(t[i], t[i])) / nv
-                    dt[i] = D
-            else:
+            use = [j for j in kids if t[j] is not None]
+            votes = [Mb[(i, j)] @ t[j] for j in use]
+            if not votes:
                 t[i] = np.ones(ci) / np.sqrt(ci)
                 if want_jac:
                     dt[i] = np.zeros((ci, n_par))
-        pen, res, jac = 0.0, [], []
-        for c in order:
-            if cyclic[c]:
                 continue
-            i = int(members[c][0])
-            if i in sinks:
-                continue
-            ci = len(partition[i])
-            kids = [int(j) for j in np.where(M[i])[0] if t[int(j)] is not None and (i, int(j)) in Mb]
-            votes = [Mb[(i, j)] @ t[j] for j in kids]
             if want_jac:
-                dvotes = [Mb[(i, j)] @ dt[j] for j in kids]
-                ti, dis, r_i, dti, dr_i = _reconcile_d(votes, dvotes)
-                res.append(r_i)
-                jac.append(dr_i)
+                ti, _, _, dti, _ = _reconcile_d(votes, [Mb[(i, j)] @ dt[j] for j in use])
                 dt[i] = dti if ti is not None else np.zeros((ci, n_par))
             else:
-                out = _reconcile(votes, residuals=residuals)
-                ti, dis = out[0], out[1]
-                if residuals:
-                    res.append(out[2])
-            pen += dis
-            if ti is None:
-                ti = np.ones(ci) / np.sqrt(ci)
-            t[i] = ti
+                ti = _reconcile(votes)[0]
+            t[i] = ti if ti is not None else np.ones(ci) / np.sqrt(ci)
+
+        pen, res, jac = 0.0, [], []
+        for (i, j) in edges:
+            ci = len(partition[i])
+            r_ij = np.zeros(ci)
+            d_ij = np.zeros((ci, n_par)) if want_jac else None
+            if t[i] is not None and t[j] is not None:
+                w = Mb[(i, j)] @ t[j]
+                nw = np.linalg.norm(w)
+                if nw > 1e-12:
+                    u = w / nw
+                    s = 1.0 if u @ t[i] >= 0 else -1.0      # the condition is sign-free
+                    r_ij = s * u - t[i]
+                    if want_jac:
+                        d_ij = (s * ((np.eye(ci) - np.outer(u, u)) / nw)
+                                @ (Mb[(i, j)] @ dt[j])) - dt[i]
+            pen += float(r_ij @ r_ij)
+            if residuals or want_jac:
+                res.append(r_ij)
+            if want_jac:
+                jac.append(d_ij)
         if want_jac:
-            r = np.concatenate(res) if res else np.zeros(1)
-            J = np.concatenate(jac, axis=0) if jac else np.zeros((1, n_par))
-            return t, pen, r, J
+            return (t, pen, np.concatenate(res) if res else np.zeros(1),
+                    np.concatenate(jac, axis=0) if jac else np.zeros((1, n_par)))
         if residuals:
-            r = np.concatenate(res) if res else np.zeros(1)
-            return t, pen, r
+            return t, pen, (np.concatenate(res) if res else np.zeros(1))
         return t, pen
 
     n_failed, last_error = 0, None
     if n_par == 0:
-        # no sinks: the whole fit is closed form, nothing is searched
         best_x, best_pen = np.zeros(0), forward(np.zeros(0))[1]
     else:
         rng = np.random.default_rng(seed)
+        x_warm = None
+        if x0_T is not None:
+            x_warm = rng.standard_normal(n_par)
+            for i in seeds:
+                col = np.asarray(x0_T)[partition[i], i]
+                if np.linalg.norm(col) > 1e-12:
+                    x_warm[offs[slot[i]]:offs[slot[i] + 1]] = col
+        elif warm_start:
+            # the cycle-product eigenvector, as a starting point and as the tie-break on a
+            # pure cycle, where every eigenvector with nonzero eigenvalue is a global minimum
+            x_warm = rng.standard_normal(n_par)
+            for i in seeds:
+                c = comp[i]
+                if not cyclic[c]:
+                    continue
+                cyc = _cycle_within(M, comp, c, int(i))
+                if cyc is None:
+                    continue
+                Pi = None
+                for a_, b_ in zip(cyc, cyc[1:] + [cyc[0]]):
+                    Mm = Mb.get((a_, b_))
+                    if Mm is None:
+                        Pi = None
+                        break
+                    Pi = Mm if Pi is None else Pi @ Mm
+                if Pi is None:
+                    continue
+                w, V = np.linalg.eig(Pi)
+                v = np.real(V[:, int(np.argmax(np.abs(w)))])
+                nv = np.linalg.norm(v)
+                if nv > 1e-12:
+                    x_warm[offs[slot[i]]:offs[slot[i] + 1]] = v / nv
+
         best_x, best_pen = None, np.inf
-        for _ in range(max(1, n_restarts)):
-            x0 = rng.standard_normal(n_par)
+        for n_r in range(max(1, n_restarts)):
+            x0 = x_warm if (n_r == 0 and x_warm is not None) else rng.standard_normal(n_par)
             try:
-                res = least_squares(lambda z: forward(z, residuals=True)[2], x0,
+                out = least_squares(lambda z: forward(z, residuals=True)[2], x0,
                                     jac=(lambda z: forward(z, want_jac=True)[3])
                                         if analytic_jac else '2-point',
                                     method='trf', xtol=tol, ftol=tol, gtol=tol,
                                     max_nfev=maxiter)
-                xc, pc = res.x, forward(res.x)[1]
+                xc, pc = out.x, forward(out.x)[1]
             except Exception as e:
                 n_failed += 1
                 last_error = e
                 xc, pc = x0, forward(x0)[1]
             if pc < best_pen:
                 best_x, best_pen = xc, pc
-
             if best_pen <= exact_tol:
                 break
         if best_x is None:
@@ -380,8 +498,9 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
 
     if n_par and n_failed == max(1, n_restarts):
         raise RuntimeError(
-            f'the sink search failed on all {n_failed} restarts, so the fit would be a '
+            f'the seed search failed on all {n_failed} restarts, so the fit would be a '
             f'random direction. Last error: {last_error!r}') from last_error
+
     t, penalty = forward(best_x)
     T = np.zeros((p, k))
     for i in range(k):
@@ -393,12 +512,22 @@ def fit_abstraction_eigen(A_low, partition, seed=0, n_restarts=5, maxiter=2000,
             continue
         ti = t[i]
         A_high[i, j] = float((Mm @ t[j]) @ ti / (ti @ ti))
+
+    if polish and free_mode != 'all' and penalty > exact_tol:
+        # release every direction, starting from what the rule found
+        Ah2, T2, info2 = fit_abstraction_eigen(
+            A_low=A, partition=partition, seed=seed, n_restarts=1, maxiter=maxiter,
+            tol=tol, exact_tol=exact_tol, analytic_jac=analytic_jac, free_mode='all',
+            x0_T=T, return_info=True)
+        if info2['penalty'] < penalty:
+            A_high, T, penalty = Ah2, T2, info2['penalty']
+
     if return_info:
         return A_high, T, dict(penalty=penalty, n_failed=n_failed,
-                               n_sinks=len(sinks), n_cyclic=n_cyc,
-                               n_free=len(sinks), n_scc=ncomp)
-    
+                               n_sinks=sum(1 for i in seeds if not kids_of[i]),
+                               n_cyclic=sum(1 for c in range(ncomp) if cyclic[c]),
+                               n_free=len(seeds), n_scc=ncomp, n_edges=len(edges),
+                               free_mode=free_mode)
+
     from src.utils.abstraction_algebra import get_S
     return A_high, T, get_S(T=T, A_low=A, partition=partition)
-
-
